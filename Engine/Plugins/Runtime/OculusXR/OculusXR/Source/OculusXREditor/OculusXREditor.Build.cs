@@ -31,6 +31,7 @@ public class OculusXREditor : ModuleRules
 				"LauncherServices",
 				"GameProjectGeneration",
 				"SharedSettingsWidgets",
+				"RHI",
 			}
 		);
 

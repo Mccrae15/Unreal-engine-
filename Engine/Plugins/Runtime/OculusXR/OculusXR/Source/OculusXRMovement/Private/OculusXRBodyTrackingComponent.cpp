@@ -104,6 +104,20 @@ UOculusXRBodyTrackingComponent::UOculusXRBodyTrackingComponent()
 	BoneNames.Add(EOculusXRBoneID::BodyRightHandLittleIntermediate, "RightHandLittleIntermediate");
 	BoneNames.Add(EOculusXRBoneID::BodyRightHandLittleDistal, "RightHandLittleDistal");
 	BoneNames.Add(EOculusXRBoneID::BodyRightHandLittleTip, "RightHandLittleTip");
+	BoneNames.Add(EOculusXRBoneID::BodyLeftUpperLeg, "LeftUpperLeg");
+	BoneNames.Add(EOculusXRBoneID::BodyLeftLowerLeg, "LeftLowerLeg");
+	BoneNames.Add(EOculusXRBoneID::BodyLeftFootAnkleTwist, "LeftFootAnkleTwist");
+	BoneNames.Add(EOculusXRBoneID::BodyLeftFootAnkle, "LeftFootAnkle");
+	BoneNames.Add(EOculusXRBoneID::BodyLeftFootSubtalar, "LeftFootSubtalar");
+	BoneNames.Add(EOculusXRBoneID::BodyLeftFootTransverse, "LeftFootTransverse");
+	BoneNames.Add(EOculusXRBoneID::BodyLeftFootBall, "LeftFootBall");
+	BoneNames.Add(EOculusXRBoneID::BodyRightUpperLeg, "RightUpperLeg");
+	BoneNames.Add(EOculusXRBoneID::BodyRightLowerLeg, "RightLowerLeg");
+	BoneNames.Add(EOculusXRBoneID::BodyRightFootAnkleTwist, "RightFootAnkleTwist");
+	BoneNames.Add(EOculusXRBoneID::BodyRightFootAnkle, "RightFootAnkle");
+	BoneNames.Add(EOculusXRBoneID::BodyRightFootSubtalar, "RightFootSubtalar");
+	BoneNames.Add(EOculusXRBoneID::BodyRightFootTransverse, "RightFootTransverse");
+	BoneNames.Add(EOculusXRBoneID::BodyRightFootBall, "RightFootBall");
 
 	OculusXRTelemetry::TScopedMarker<OculusXRTelemetry::Events::FMovementSDKBodyStart>(static_cast<int>(GetTypeHash(this)));
 }

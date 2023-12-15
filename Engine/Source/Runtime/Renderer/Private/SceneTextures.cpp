@@ -159,11 +159,11 @@ static bool FindStereoMotionVectorTexture(FTexture2DRHIRef& MVTexture, FIntPoint
 }
 
 // BEGIN META SECTION - XR Soft Occlusions
-static bool FindEnvironmentDepthTexture_RenderThread(FTextureRHIRef& OutTexture, FVector2f& OutDepthFactors, FMatrix44f OutScreenToDepthMatrices[2])
+static bool FindEnvironmentDepthTexture_RenderThread(FTextureRHIRef& OutTexture, FVector2f& OutDepthFactors, FMatrix44f OutScreenToDepthMatrices[2], FMatrix44f OutDepthViewProjMatrices[2])
 {
 	if (IStereoRenderTargetManager* StereoRenderTargetManager = FindStereoRenderTargetManager())
 	{
-		if (StereoRenderTargetManager->FindEnvironmentDepthTexture_RenderThread(OutTexture, OutDepthFactors, OutScreenToDepthMatrices))
+		if (StereoRenderTargetManager->FindEnvironmentDepthTexture_RenderThread(OutTexture, OutDepthFactors, OutScreenToDepthMatrices, OutDepthViewProjMatrices))
 		{
 			return true;
 		}
@@ -172,6 +172,8 @@ static bool FindEnvironmentDepthTexture_RenderThread(FTextureRHIRef& OutTexture,
 	OutDepthFactors = FVector2f(-1.0f, 1.0f);
 	OutScreenToDepthMatrices[0] = FMatrix44f::Identity;
 	OutScreenToDepthMatrices[1] = FMatrix44f::Identity;
+	OutDepthViewProjMatrices[0] = FMatrix44f::Identity;
+	OutDepthViewProjMatrices[1] = FMatrix44f::Identity;
 	return false;
 }
 // END META SECTION - XR Soft Occlusions
@@ -659,7 +661,7 @@ void FSceneTextures::InitializeViewFamily(FRDGBuilder& GraphBuilder, FViewFamily
 	if (Config.ShadingPath == EShadingPath::Mobile)
 	{
 		FTextureRHIRef EnvironmentDepthRHI;
-		if (FindEnvironmentDepthTexture_RenderThread(EnvironmentDepthRHI, SceneTextures.DepthFactors, SceneTextures.ScreenToDepthMatrices))
+		if (FindEnvironmentDepthTexture_RenderThread(EnvironmentDepthRHI, SceneTextures.DepthFactors, SceneTextures.ScreenToDepthMatrices, SceneTextures.DepthViewProjMatrices))
 		{
 			auto &desc = EnvironmentDepthRHI->GetDesc();
 			SceneTextures.EnvironmentDepthTexture = RegisterExternalTexture(GraphBuilder, EnvironmentDepthRHI, TEXT("EnvironmentDepth"));

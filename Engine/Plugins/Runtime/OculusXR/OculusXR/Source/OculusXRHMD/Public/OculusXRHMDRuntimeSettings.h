@@ -26,6 +26,10 @@ class OCULUSXRHMD_API UOculusXRHMDRuntimeSettings : public UObject
 	GENERATED_UCLASS_BODY()
 
 public:
+	/** Configure System Splash Screen background type. To configure Splash Image go to Project Settings > Platforms > Android > Launch Image. */
+	UPROPERTY(config, EditAnywhere, Category = "System SplashScreen", meta = (DisplayName = "System Splash Screen Background"))
+	ESystemSplashBackgroundType SystemSplashBackground;
+
 	/** Whether the Splash screen is enabled. */
 	UPROPERTY(config, EditAnywhere, Category = "Engine SplashScreen")
 	bool bAutoEnabled;
@@ -160,6 +164,7 @@ public:
 	UPROPERTY(config, EditAnywhere, Category = Mobile, meta = (DisplayName = "Scene Support"))
 	bool bSceneSupportEnabled;
 
+
 	/** Whether body tracking functionality can be used with the app */
 	UPROPERTY(config, EditAnywhere, Category = Mobile, meta = (DisplayName = "Body Tracking Enabled", EditCondition = "XrApi == EOculusXRXrApi::OVRPluginOpenXR"))
 	bool bBodyTrackingEnabled;
@@ -173,6 +178,10 @@ public:
 	UPROPERTY(config, EditAnywhere, Category = Mobile, meta = (DisplayName = "Face Tracking Enabled", EditCondition = "XrApi == EOculusXRXrApi::OVRPluginOpenXR"))
 	bool bFaceTrackingEnabled;
 
+	/** Select preffered Face Tracking data sources */
+	UPROPERTY(config, EditAnywhere, Category = Mobile, meta = (DisplayName = "Face Tracking Source", EditCondition = "XrApi == EOculusXRXrApi::OVRPluginOpenXR"))
+	TSet<EFaceTrackingDataSourceConfig> FaceTrackingDataSource;
+
 	/** On supported Oculus mobile platforms, copy compiled .so directly to device. Allows updating compiled code without rebuilding and installing an APK. */
 	UPROPERTY(config, EditAnywhere, Category = Mobile, meta = (DisplayName = "Deploy compiled .so directly to device"))
 	bool bDeploySoToDevice;
@@ -184,6 +193,10 @@ public:
 	/** If selected, will increase the frequency of one processor at the expense of decreasing the frequency of the other on supported devices. */
 	UPROPERTY(config, EditAnywhere, Category = Mobile, meta = (DisplayName = "Processor Favor"))
 	EProcessorFavor ProcessorFavor;
+
+	/** Whether Tile Turn Off is enabled in app */
+	UPROPERTY(config, EditAnywhere, Category = Mobile, meta = (DisplayName = "Tile Turn Off", EditCondition = "false"))
+	bool bTileTurnOffEnabled;
 
 private:
 #if WITH_EDITOR

@@ -188,7 +188,7 @@ namespace OculusXRAnchors
 		{
 			UE_LOG(LogOculusXRAnchors, Warning, TEXT("Invalid anchor provided when attempting to set anchor component status."));
 			OutResult = EOculusXRAnchorResult::Failure;
-			ResultCallback.ExecuteIfBound(EOculusXRAnchorResult::Failure, nullptr, EOculusXRSpaceComponentType::Undefined, false);
+			ResultCallback.ExecuteIfBound(EOculusXRAnchorResult::Failure, FOculusXRUInt64(), EOculusXRSpaceComponentType::Undefined, false);
 			return false;
 		}
 
@@ -196,7 +196,7 @@ namespace OculusXRAnchors
 		{
 			UE_LOG(LogOculusXRAnchors, Warning, TEXT("Anchor provided to set anchor component status has invalid handle."));
 			OutResult = EOculusXRAnchorResult::Failure;
-			ResultCallback.ExecuteIfBound(EOculusXRAnchorResult::Failure, nullptr, EOculusXRSpaceComponentType::Undefined, false);
+			ResultCallback.ExecuteIfBound(EOculusXRAnchorResult::Failure, FOculusXRUInt64(), EOculusXRSpaceComponentType::Undefined, false);
 			return false;
 		}
 
@@ -210,7 +210,7 @@ namespace OculusXRAnchors
 			SetComponentStatusBinding SetComponentStatusData;
 			SetComponentStatusData.RequestId = RequestId;
 			SetComponentStatusData.Binding = ResultCallback;
-			SetComponentStatusData.Anchor = Anchor;
+			SetComponentStatusData.AnchorHandle = Anchor->GetHandle();
 
 			FOculusXRAnchors* SDKInstance = GetInstance();
 			SDKInstance->SetComponentStatusBindings.Add(RequestId, SetComponentStatusData);
@@ -218,34 +218,8 @@ namespace OculusXRAnchors
 		else
 		{
 			UE_LOG(LogOculusXRAnchors, Warning, TEXT("Failed to start async call to set anchor component status."));
-			ResultCallback.ExecuteIfBound(EOculusXRAnchorResult::Failure, nullptr, EOculusXRSpaceComponentType::Undefined, false);
+			ResultCallback.ExecuteIfBound(EOculusXRAnchorResult::Failure, FOculusXRUInt64(), EOculusXRSpaceComponentType::Undefined, false);
 			Trace.SetResult(OculusXRTelemetry::EAction::Cancel).End();
-		}
-
-		return true;
-	}
-
-	bool FOculusXRAnchors::SetComponentStatus(uint64 Space, EOculusXRSpaceComponentType SpaceComponentType, bool Enable, float Timeout, const FOculusXRAnchorSetAnchorComponentStatusDelegate& ResultCallback, EOculusXRAnchorResult::Type& OutResult)
-	{
-		uint64 RequestId = 0;
-		OutResult = FOculusXRAnchorManager::SetSpaceComponentStatus(Space, SpaceComponentType, Enable, Timeout, RequestId);
-		bool bAsyncStartSuccess = UOculusXRAnchorBPFunctionLibrary::IsAnchorResultSuccess(OutResult);
-
-		if (bAsyncStartSuccess)
-		{
-			SetAnchorComponentStatusBinding SetComponentStatusData;
-			SetComponentStatusData.RequestId = RequestId;
-			SetComponentStatusData.Binding = ResultCallback;
-			SetComponentStatusData.Space = Space;
-			SetComponentStatusData.ComponentType = SpaceComponentType;
-
-			FOculusXRAnchors* SDKInstance = GetInstance();
-			SDKInstance->SetAnchorComponentStatusBindings.Add(RequestId, SetComponentStatusData);
-		}
-		else
-		{
-			UE_LOG(LogOculusXRAnchors, Warning, TEXT("Failed to start async call to set anchor component status."));
-			ResultCallback.ExecuteIfBound(EOculusXRAnchorResult::Failure, Space, SpaceComponentType);
 		}
 
 		return true;
@@ -267,8 +241,62 @@ namespace OculusXRAnchors
 			return false;
 		}
 
-		OutResult = FOculusXRAnchorManager::GetSpaceComponentStatus(Anchor->GetHandle(), SpaceComponentType, OutEnabled, OutChangePending);
+		return GetComponentStatus(Anchor->GetHandle(), SpaceComponentType, OutEnabled, OutChangePending, OutResult);
+	}
 
+	bool FOculusXRAnchors::GetAnchorSupportedComponents(UOculusXRAnchorComponent* Anchor, TArray<EOculusXRSpaceComponentType>& OutSupportedComponents, EOculusXRAnchorResult::Type& OutResult)
+	{
+		if (!IsValid(Anchor))
+		{
+			UE_LOG(LogOculusXRAnchors, Warning, TEXT("Invalid anchor provided when attempting to get space component status."));
+			OutResult = EOculusXRAnchorResult::Failure;
+			return false;
+		}
+
+		if (!Anchor->HasValidHandle())
+		{
+			UE_LOG(LogOculusXRAnchors, Warning, TEXT("Anchor provided to get space component status has invalid handle."));
+			OutResult = EOculusXRAnchorResult::Failure;
+			return false;
+		}
+
+		return GetSupportedComponents(Anchor->GetHandle(), OutSupportedComponents, OutResult);
+	}
+
+	bool FOculusXRAnchors::SetComponentStatus(uint64 Space, EOculusXRSpaceComponentType SpaceComponentType, bool Enable, float Timeout, const FOculusXRAnchorSetComponentStatusDelegate& ResultCallback, EOculusXRAnchorResult::Type& OutResult)
+	{
+		uint64 RequestId = 0;
+		OutResult = FOculusXRAnchorManager::SetSpaceComponentStatus(Space, SpaceComponentType, Enable, Timeout, RequestId);
+		bool bAsyncStartSuccess = UOculusXRAnchorBPFunctionLibrary::IsAnchorResultSuccess(OutResult);
+
+		if (bAsyncStartSuccess)
+		{
+			SetComponentStatusBinding SetComponentStatusData;
+			SetComponentStatusData.RequestId = RequestId;
+			SetComponentStatusData.Binding = ResultCallback;
+			SetComponentStatusData.AnchorHandle = Space;
+
+			FOculusXRAnchors* SDKInstance = GetInstance();
+			SDKInstance->SetComponentStatusBindings.Add(RequestId, SetComponentStatusData);
+		}
+		else
+		{
+			UE_LOG(LogOculusXRAnchors, Warning, TEXT("Failed to start async call to set anchor component status."));
+			ResultCallback.ExecuteIfBound(EOculusXRAnchorResult::Failure, Space, SpaceComponentType, Enable);
+		}
+
+		return true;
+	}
+
+	bool FOculusXRAnchors::GetComponentStatus(uint64 AnchorHandle, EOculusXRSpaceComponentType SpaceComponentType, bool& OutEnabled, bool& OutChangePending, EOculusXRAnchorResult::Type& OutResult)
+	{
+		OutResult = FOculusXRAnchorManager::GetSpaceComponentStatus(AnchorHandle, SpaceComponentType, OutEnabled, OutChangePending);
+		return UOculusXRAnchorBPFunctionLibrary::IsAnchorResultSuccess(OutResult);
+	}
+
+	bool FOculusXRAnchors::GetSupportedComponents(uint64 AnchorHandle, TArray<EOculusXRSpaceComponentType>& OutSupportedComponents, EOculusXRAnchorResult::Type& OutResult)
+	{
+		OutResult = FOculusXRAnchorManager::GetSupportedAnchorComponents(AnchorHandle, OutSupportedComponents);
 		return UOculusXRAnchorBPFunctionLibrary::IsAnchorResultSuccess(OutResult);
 	}
 
@@ -316,7 +344,7 @@ namespace OculusXRAnchors
 		return bAsyncStartSuccess;
 	}
 
-	void AnchorComponetsToReferences(const TArray<UOculusXRAnchorComponent*>& Anchors, TArray<uint64>& Handles, TArray<TWeakObjectPtr<UOculusXRAnchorComponent>>& AnchorPtrs)
+	void AnchorComponentsToReferences(const TArray<UOculusXRAnchorComponent*>& Anchors, TArray<uint64>& Handles, TArray<TWeakObjectPtr<UOculusXRAnchorComponent>>& AnchorPtrs)
 	{
 		Handles.Empty();
 		AnchorPtrs.Empty();
@@ -345,7 +373,7 @@ namespace OculusXRAnchors
 		TArray<uint64> Handles;
 		TArray<TWeakObjectPtr<UOculusXRAnchorComponent>> SavedAnchors;
 
-		AnchorComponetsToReferences(Anchors, Handles, SavedAnchors);
+		AnchorComponentsToReferences(Anchors, Handles, SavedAnchors);
 
 		uint64 RequestId = 0;
 		OutResult = FOculusXRAnchorManager::SaveAnchorList(Handles, StorageLocation, RequestId);
@@ -414,7 +442,7 @@ namespace OculusXRAnchors
 		TArray<uint64> Handles;
 		TArray<TWeakObjectPtr<UOculusXRAnchorComponent>> SharedAnchors;
 
-		AnchorComponetsToReferences(Anchors, Handles, SharedAnchors);
+		AnchorComponentsToReferences(Anchors, Handles, SharedAnchors);
 
 		uint64 RequestId = 0;
 		OutResult = FOculusXRAnchorManager::ShareSpaces(Handles, OculusUserIDs, RequestId);
@@ -557,25 +585,22 @@ namespace OculusXRAnchors
 		OculusXRTelemetry::Events::FAnchorsSetComponentStatusResponse(static_cast<int>(GetTypeHash(RequestId)))
 			.SetResult(OVRP_SUCCESS(Result) ? OculusXRTelemetry::EAction::Success : OculusXRTelemetry::EAction::Fail);
 		SetComponentStatusBinding* SetStatusBinding = SetComponentStatusBindings.Find(RequestId.GetValue());
-		SetAnchorComponentStatusBinding* SetAnchorStatusBinding = SetAnchorComponentStatusBindings.Find(RequestId.GetValue());
 
-		if (SetStatusBinding == nullptr && SetAnchorStatusBinding == nullptr)
+		if (SetStatusBinding == nullptr)
 		{
 			UE_LOG(LogOculusXRAnchors, Verbose, TEXT("Couldn't find binding for set component status! Request: %llu"), RequestId.GetValue());
-			SetComponentStatusBindings.Remove(RequestId.GetValue());
-			SetAnchorComponentStatusBindings.Remove(RequestId.GetValue());
 			return;
 		}
 
 		if (SetStatusBinding != nullptr)
 		{
-			SetStatusBinding->Binding.ExecuteIfBound(static_cast<EOculusXRAnchorResult::Type>(Result), SetStatusBinding->Anchor.Get(), ComponentType, Enabled);
+			SetStatusBinding->Binding.ExecuteIfBound(static_cast<EOculusXRAnchorResult::Type>(Result), SetStatusBinding->AnchorHandle, ComponentType, Enabled);
 			SetComponentStatusBindings.Remove(RequestId.GetValue());
 			return;
 		}
 
-		SetAnchorStatusBinding->Binding.ExecuteIfBound(static_cast<EOculusXRAnchorResult::Type>(Result), SetAnchorStatusBinding->Space, SetAnchorStatusBinding->ComponentType);
-		SetAnchorComponentStatusBindings.Remove(RequestId.GetValue());
+		SetStatusBinding->Binding.ExecuteIfBound(static_cast<EOculusXRAnchorResult::Type>(Result), SetStatusBinding->AnchorHandle, ComponentType, Enabled);
+		SetComponentStatusBindings.Remove(RequestId.GetValue());
 	}
 
 	void FOculusXRAnchors::HandleAnchorSaveComplete(FOculusXRUInt64 RequestId, FOculusXRUInt64 Space, bool Success, int Result, FOculusXRUUID UUID)
@@ -655,9 +680,23 @@ namespace OculusXRAnchors
 		if (ResultPtr)
 		{
 			uint64 tempOut;
-			FOculusXRAnchorManager::SetSpaceComponentStatus(Space, EOculusXRSpaceComponentType::Locatable, true, 0.0f, tempOut);
-			FOculusXRAnchorManager::SetSpaceComponentStatus(Space, EOculusXRSpaceComponentType::Sharable, true, 0.0f, tempOut);
-			FOculusXRAnchorManager::SetSpaceComponentStatus(Space, EOculusXRSpaceComponentType::Storable, true, 0.0f, tempOut);
+			TArray<EOculusXRSpaceComponentType> supportedTypes;
+			FOculusXRAnchorManager::GetSupportedAnchorComponents(Space, supportedTypes);
+
+			if (supportedTypes.Contains(EOculusXRSpaceComponentType::Locatable))
+			{
+				FOculusXRAnchorManager::SetSpaceComponentStatus(Space, EOculusXRSpaceComponentType::Locatable, true, 0.0f, tempOut);
+			}
+
+			if (supportedTypes.Contains(EOculusXRSpaceComponentType::Sharable))
+			{
+				FOculusXRAnchorManager::SetSpaceComponentStatus(Space, EOculusXRSpaceComponentType::Sharable, true, 0.0f, tempOut);
+			}
+
+			if (supportedTypes.Contains(EOculusXRSpaceComponentType::Storable))
+			{
+				FOculusXRAnchorManager::SetSpaceComponentStatus(Space, EOculusXRSpaceComponentType::Storable, true, 0.0f, tempOut);
+			}
 
 			ResultPtr->Results.Add(FOculusXRSpaceQueryResult(Space, UUID, ResultPtr->Location));
 		}

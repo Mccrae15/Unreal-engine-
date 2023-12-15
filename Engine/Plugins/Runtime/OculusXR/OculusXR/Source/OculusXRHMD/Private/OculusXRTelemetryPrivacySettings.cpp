@@ -75,6 +75,7 @@ void UOculusXRTelemetryPrivacySettings::PostEditChangeProperty(struct FPropertyC
 		using namespace OculusXRTelemetry;
 		if (FOculusXRHMDModule::Get().IsOVRPluginAvailable() && FOculusXRHMDModule::GetPluginWrapper().IsInitialized())
 		{
+			SetTelemetryConsent(bIsEnabled);
 			Events::FEditorConsent().Start()						 //
 				.AddAnnotation(Events::ConsentOriginKey, "Settings") //
 				.End(bIsEnabled ? EAction::Success : EAction::Fail);

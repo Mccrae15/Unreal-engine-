@@ -29,6 +29,25 @@ bool UOculusXRMovementFunctionLibrary::IsBodyTrackingSupported()
 	return OculusXRMovement::IsBodyTrackingSupported();
 }
 
+bool UOculusXRMovementFunctionLibrary::RequestBodyTrackingFidelity(EOculusXRBodyTrackingFidelity fidelity)
+{
+	return OculusXRMovement::RequestBodyTrackingFidelity(fidelity);
+}
+
+bool UOculusXRMovementFunctionLibrary::ResetBodyTrackingCalibration()
+{
+	return OculusXRMovement::ResetBodyTrackingCalibration();
+}
+
+bool UOculusXRMovementFunctionLibrary::SuggestBodyTrackingCalibrationOverride(float height)
+{
+	return OculusXRMovement::SuggestBodyTrackingCalibrationOverride(height);
+}
+
+bool UOculusXRMovementFunctionLibrary::StartBodyTrackingByJointSet(EOculusXRBodyJointSet jointSet)
+{
+	return OculusXRMovement::StartBodyTrackingByJointSet(jointSet);
+}
 
 bool UOculusXRMovementFunctionLibrary::StartBodyTracking()
 {

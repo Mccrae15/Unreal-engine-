@@ -59,9 +59,13 @@
 		<setBoolFromProperty result="bAnchorSupportEnabled" ini="Engine" section="/Script/OculusXRHMD.OculusXRHMDRuntimeSettings" property="bAnchorSupportEnabled" default="false"/>
 		<setBoolFromProperty result="bAnchorSharingEnabled" ini="Engine" section="/Script/OculusXRHMD.OculusXRHMDRuntimeSettings" property="bAnchorSharingEnabled" default="false"/>
 		<setBoolFromProperty result="bSceneSupportEnabled" ini="Engine" section="/Script/OculusXRHMD.OculusXRHMDRuntimeSettings" property="bSceneSupportEnabled" default="false"/>
+		
 		<setBoolFromProperty result="bSupportEyeTrackedFoveatedRendering" ini="Engine" section="/Script/OculusXRHMD.OculusXRHMDRuntimeSettings" property="bSupportEyeTrackedFoveatedRendering" default="false"/>
 		<setStringFromProperty result="ProcessorFavor" ini="Engine" section="/Script/OculusXRHMD.OculusXRHMDRuntimeSettings" property="ProcessorFavor" default="FavorEqually"/>
 		<setBoolIsEqual result="bProcessorFavorEqually" arg1="$S(ProcessorFavor)" arg2="FavorEqually"/>
+		<setStringFromProperty result="SystemSplashBackground" ini="Engine" section="/Script/OculusXRHMD.OculusXRHMDRuntimeSettings" property="SystemSplashBackground" default="Black"/>
+		<setBoolIsEqual result="bSystemSplashImageContextualPassthrough" arg1="$S(SystemSplashBackground)" arg2="Contextual"/>
+		<setBoolIsEqual result="bSystemSplashImageBlack" arg1="$S(SystemSplashBackground)" arg2="Black"/>
 
 		<!-- check for experimental feature support from config -->
 		<setBoolFromProperty result="bSupportExperimentalFeatures" ini="Engine" section="/Script/OculusXRHMD.OculusXRHMDRuntimeSettings" property="bSupportExperimentalFeatures" default="false"/>
@@ -69,6 +73,7 @@
 		<setBoolFromProperty result="bBodyTrackingEnabled" ini="Engine" section="/Script/OculusXRHMD.OculusXRHMDRuntimeSettings" property="bBodyTrackingEnabled" default="false"/>
 		<setBoolFromProperty result="bEyeTrackingEnabled" ini="Engine" section="/Script/OculusXRHMD.OculusXRHMDRuntimeSettings" property="bEyeTrackingEnabled" default="false"/>
 		<setBoolFromProperty result="bFaceTrackingEnabled" ini="Engine" section="/Script/OculusXRHMD.OculusXRHMDRuntimeSettings" property="bFaceTrackingEnabled" default="false"/>
+		<setBoolFromProperty result="bTileTurnOffEnabled" ini="Engine" section="/Script/OculusXRHMD.OculusXRHMDRuntimeSettings" property="bTileTurnOffEnabled" default="false"/>
 
 		<!-- get packaging for Oculus Mobile from ini and reset it if architecture not supported -->
 		<if condition="bPackageForMetaQuest">
@@ -216,6 +221,7 @@
 					<true>
 						<log text="Adding face tracking feature and permission tags to manifest"/>
 						<addPermission android:name="com.oculus.permission.FACE_TRACKING"/>
+						<addPermission android:name="android.permission.RECORD_AUDIO"/>
 						<addFeature android:name="oculus.software.face_tracking" android:required="true"/>
 					</true>
 				</if>
@@ -246,6 +252,7 @@
 						<addPermission android:name="com.oculus.permission.PLANE_TRACKING"/>
 					</true>
 				</if>
+				
 			</true>
 		</if>
 
@@ -363,6 +370,30 @@
 			</if>
 
 
+			<!-- Add System Splash Image Background -->
+			<setString result="splashBackground" value=""/>
+			<if condition="bSystemSplashImageContextualPassthrough">
+				<true>
+					<setString result="splashBackground" value="passthrough-contextual"/>
+				</true>
+			</if>
+			<if condition="bSystemSplashImageBlack">
+				<true>
+					<setString result="splashBackground" value="black"/>
+				</true>
+			</if>
+			<setIntLength result="splashBackgroundLength" source="$S(splashBackground)"/>
+			<setBoolIsGreater result="bHasSplashBackground" arg1="$I(splashBackgroundLength)" arg2="0"/>
+			<if condition="bHasSplashBackground">
+				<true>
+					<setElement result="contextualPassthrough" value="meta-data"/>
+					<addAttribute tag="$contextualPassthrough" name="android:name" value="com.oculus.ossplash.background"/>
+					<addAttribute tag="$contextualPassthrough" name="android:value" value="$S(splashBackground)"/>
+					<addElement tag="application" name="contextualPassthrough"/>
+				</true>
+			</if>
+
+
 			<!-- Add Oculus Splash Screen -->
 			<if condition="bShowLaunchImage">
 				<true>
@@ -438,6 +469,12 @@
 					<addElement tag="application" name="tradeCpuForGpuAmount"/>
 				</false>
 			</if>
+
+			<!-- Add Tile Turn Off -->
+			<setElement result="tileTurnOffEnabled" value="meta-data"/>
+			<addAttribute tag="$tileTurnOffEnabled" name="android:name" value="com.oculus.foveation.tile_turn_off"/>
+			<addAttribute tag="$tileTurnOffEnabled" name="android:value" value="$B(bTileTurnOffEnabled)"/>
+			<addElement tag="application" name="tileTurnOffEnabled"/>
 		</loopElements>
 
 	</androidManifestUpdates>

@@ -157,7 +157,7 @@ public:
 	 * @param OutScreenToDepthMatrices	(out) The screen to depth matrices used to transform UV coordinates
 	 * @return							true, if texture was found; false, if the texture was not available.
 	 */
-	virtual bool FindEnvironmentDepthTexture_RenderThread(FTextureRHIRef& OutTexture, FVector2f& OutDepthFactors, FMatrix44f OutScreenToDepthMatrices[2]) { return false; }
+	virtual bool FindEnvironmentDepthTexture_RenderThread(FTextureRHIRef& OutTexture, FVector2f& OutDepthFactors, FMatrix44f OutScreenToDepthMatrices[2], FMatrix44f OutDepthViewProjMatrices[2]) { return false; }
 	// END META SECTION - XR Soft Occlusions
 
 	static EPixelFormat GetStereoLayerPixelFormat() { return PF_B8G8R8A8; }

@@ -118,13 +118,13 @@ namespace OculusXRHMD
 		switch (InResourceType)
 		{
 			case RRT_Texture2D:
-				return VulkanRHI->RHICreateTexture2DFromResource(InFormat, InSizeX, InSizeY, InNumMips, InNumSamples, (VkImage)InTexture, InTexCreateFlags).GetReference();
+				return VulkanRHI->RHICreateTexture2DFromResource(InFormat, InSizeX, InSizeY, InNumMips, InNumSamples, (VkImage)InTexture, InTexCreateFlags, InBinding).GetReference();
 
 			case RRT_Texture2DArray:
 				return VulkanRHI->RHICreateTexture2DArrayFromResource(InFormat, InSizeX, InSizeY, 2, InNumMips, InNumSamples, (VkImage)InTexture, InTexCreateFlags, InBinding).GetReference();
 
 			case RRT_TextureCube:
-				return VulkanRHI->RHICreateTextureCubeFromResource(InFormat, InSizeX, false, 1, InNumMips, (VkImage)InTexture, InTexCreateFlags).GetReference();
+				return VulkanRHI->RHICreateTextureCubeFromResource(InFormat, InSizeX, false, 1, InNumMips, (VkImage)InTexture, InTexCreateFlags, InBinding).GetReference();
 
 			default:
 				return nullptr;

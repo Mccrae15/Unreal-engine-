@@ -20,7 +20,7 @@ public:
 private:
 	static void LaunchEnvironment(FString EnvironmentName);
 	static void LaunchLocalSharingServer();
-	static void LaunchProcess(FString BinaryPath, FString Arguments, FString LogContext, FProcHandle& OutProcHandle);
+	static bool LaunchProcess(FString BinaryPath, FString Arguments, FString LogContext, FProcHandle& OutProcHandle);
 	static void StopProcess(FProcHandle& ProcHandle, FString LogContext);
 
 	static FString GetMetaXRSimPackagePath();

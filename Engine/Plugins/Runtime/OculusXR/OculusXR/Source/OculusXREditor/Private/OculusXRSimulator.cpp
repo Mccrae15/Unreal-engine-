@@ -2,6 +2,7 @@
 
 #include "OculusXRSimulator.h"
 #include "OculusXRHMDRuntimeSettings.h"
+#include "OculusXRTelemetryEditorEvents.h"
 #include "Misc/MessageDialog.h"
 
 #include "Windows/WindowsPlatformMisc.h"
@@ -18,12 +19,14 @@ bool FMetaXRSimulator::IsSimulatorActivated()
 
 void FMetaXRSimulator::ToggleOpenXRRuntime()
 {
+	OculusXRTelemetry::TScopedMarker<OculusXRTelemetry::Events::FSimulator> Event;
 	FString MetaXRSimPath = GetSimulatorJsonPath();
 	if (!IFileManager::Get().FileExists(*MetaXRSimPath))
 	{
 		FString Message("Meta XR Simulator Not Found.\nPlease set its path in Project Settings/Meta XR Plugin/PC.");
 		FMessageDialog::Open(EAppMsgType::Ok, FText::FromString(Message));
 		UE_LOG(LogMetaXRSim, Error, TEXT("%s"), *Message);
+		const auto& NotEnd = Event.SetResult(OculusXRTelemetry::EAction::Fail).AddAnnotation("reason", "not found");
 
 		return;
 	}
@@ -38,6 +41,7 @@ void FMetaXRSimulator::ToggleOpenXRRuntime()
 		FWindowsPlatformMisc::SetEnvironmentVar(*OpenXrRuntimeEnvKey, *PrevOpenXrRuntimeEnvKey);
 
 		UE_LOG(LogMetaXRSim, Log, TEXT("Meta XR Simulator is deactivated. (%s : %s)"), *OpenXrRuntimeEnvKey, *PrevOpenXrRuntimeEnvKey);
+		const auto& NotEnd = Event.AddAnnotation("action", "deactivated");
 	}
 	else
 	{
@@ -49,6 +53,7 @@ void FMetaXRSimulator::ToggleOpenXRRuntime()
 		FWindowsPlatformMisc::SetEnvironmentVar(*OpenXrRuntimeEnvKey, *MetaXRSimPath);
 
 		UE_LOG(LogMetaXRSim, Log, TEXT("Meta XR Simulator is activated. (%s : %s)"), *OpenXrRuntimeEnvKey, *MetaXRSimPath);
+		const auto& NotEnd = Event.AddAnnotation("action", "activated");
 	}
 }
 

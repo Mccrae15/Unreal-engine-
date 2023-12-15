@@ -21,6 +21,7 @@ BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FEnvironmentDepthUniformParameters, )
 	SHADER_PARAMETER_SAMPLER(SamplerState, EnvironmentDepthSampler)
 	SHADER_PARAMETER(FVector2f, DepthFactors)
 	SHADER_PARAMETER_ARRAY(FMatrix44f, ScreenToDepthMatrices, [2])
+	SHADER_PARAMETER_ARRAY(FMatrix44f, DepthViewProjMatrices, [2])
 END_GLOBAL_SHADER_PARAMETER_STRUCT()
 
 extern void SetupEnvironmentDepthUniformParameters(const class FSceneView& View, const FRDGSystemTextures& SystemTextures, const FMobileBasePassTextures& MobileBasePassTextures, FEnvironmentDepthUniformParameters& OutParameters);

@@ -9,7 +9,6 @@ LICENSE file in the root directory of this source tree.
 #include "OculusXRAnchorTypes.h"
 #include "OculusXRHMDPrivate.h"
 #include "OculusXRAnchorsModule.h"
-#include "OVR_Plugin_Types.h"
 #include "OculusXRAnchorTypesPrivate.h"
 
 bool FOculusXRUInt64::operator==(const FOculusXRUInt64& Right) const

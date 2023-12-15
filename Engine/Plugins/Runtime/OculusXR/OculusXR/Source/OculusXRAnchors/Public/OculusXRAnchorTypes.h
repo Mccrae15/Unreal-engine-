@@ -8,7 +8,6 @@ LICENSE file in the root directory of this source tree.
 
 #pragma once
 #include <memory>
-
 #include "OculusXRAnchorTypes.generated.h"
 
 #define OCULUSXR_UUID_SIZE 16
@@ -44,6 +43,7 @@ namespace EOculusXRAnchorResult
 		Failure_SpaceLocalizationFailed = -2002,
 		Failure_SpaceNetworkTimeout = -2003,
 		Failure_SpaceNetworkRequestFailed = -2004,
+
 
 	};
 } // namespace EOculusXRAnchorResult

@@ -1300,6 +1300,8 @@ public:
 	FString GPUTargetOption;
 	/** Default GPUTarget*/
 	FString DefaultGPUTarget;
+	/** Dump All*/
+	FString DumpAll;
 	/** SpirV file extension name*/
 	FString SpirVExt;
 	/** Default file extension name*/
@@ -1382,7 +1384,7 @@ void CompileShaderOffline(const FShaderCompilerInput& Input,
 
 	FString CompilerCommand = Options.CommonOptions;
 	if (!Options.GPUTargetOption.IsEmpty())
-		{
+	{
 		FString GPUTarget = Input.ExtraSettings.GPUTarget;
 		if (GPUTarget.IsEmpty())
 			GPUTarget = Options.DefaultGPUTarget;
@@ -1466,16 +1468,22 @@ void CompileShaderOffline(const FShaderCompilerInput& Input,
 
 			ShaderOutput.NumInstructions = OfflineCompiler_ExtractNumberInstructions(StdOut, Options.InstructionStrings);
 
-			FString OutputStatsFile;
+			FString OutputStatsFile = GetFileName(FString("-Stats"), FString(".txt"), ShaderOutput.NumInstructions);
+			ShaderOutput.ShaderStats = FString("\n") + OutputStatsFile + FString("\n") + StdOut;
 			if (Input.ExtraSettings.bSaveCompilerStatsFiles)
 			{
-				OutputStatsFile = GetFileName(FString("-Stats"), FString(".txt"), ShaderOutput.NumInstructions);
 				FArchive* ArOutput = IFileManager::Get().CreateFileWriter(*OutputStatsFile, FILEWRITE_EvenIfReadOnly);
 				if (ArOutput == nullptr)
 				{
 					return;
-				}
+				}				
 
+				if (!Options.DumpAll.IsEmpty()) {
+					CompilerCommand += Options.DumpAll;
+					//TODO: It's expensive to run the process twice. Better to run it once with DumpAll and parse the StdOut to get Stats.
+					// But to do that, we need to know the preserved keyword for Stats.
+					FPlatformProcess::ExecProcess(*CompilerPath, *CompilerCommand, &ReturnCode, &StdOut, &StdErr, *CompilerWorkingDirectory);
+				}
 				FString StatsOutput = CompilerCommand + FString("\n") + StdOut;
 				const int32 StatsLen = StatsOutput.Len();
 				TSharedPtr<ANSICHAR> ShaderStats = MakeShareable(new ANSICHAR[StatsLen + 1]);
@@ -1485,7 +1493,6 @@ void CompileShaderOffline(const FShaderCompilerInput& Input,
 				delete ArOutput;
 			}
 
-			ShaderOutput.ShaderStats = FString("\n") + OutputStatsFile + FString("\n") + StdOut;
 			}
 		}
 
@@ -1580,6 +1587,11 @@ void CompileShaderOffline_Adreno(const FShaderCompilerInput& Input,
 		Options.FrequencyExtraOption.Emplace(SF_Vertex, TEXT(" -link_with_fs"));
 
 		Options.InstructionStrings.Add("Total instruction count                                     :");
+	}
+
+	if (Input.ExtraSettings.bDumpAll) 
+	{
+		Options.DumpAll = " -dump=all";
 	}
 
 	CompileShaderOffline(Input, ShaderOutput, ShaderSource, SourceSize, bVulkanSpirV, Options, VulkanSpirVEntryPoint);

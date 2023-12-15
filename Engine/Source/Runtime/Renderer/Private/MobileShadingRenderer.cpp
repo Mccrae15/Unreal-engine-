@@ -1383,6 +1383,7 @@ void FMobileSceneRenderer::RenderForward(FRDGBuilder& GraphBuilder, FRDGTextureR
 			for (int i = 0; i < 2; ++i)
 			{
 				MobileBasePassTextures.ScreenToDepthMatrices[i] = FMatrix44f::Identity;
+				MobileBasePassTextures.DepthViewProjMatrices[i] = FMatrix44f::Identity;
 			}
 		}
 		else
@@ -1392,6 +1393,7 @@ void FMobileSceneRenderer::RenderForward(FRDGBuilder& GraphBuilder, FRDGTextureR
 			for (int i = 0; i < 2; ++i)
 			{
 				MobileBasePassTextures.ScreenToDepthMatrices[i] = SceneTextures.ScreenToDepthMatrices[i];
+				MobileBasePassTextures.DepthViewProjMatrices[i] = SceneTextures.DepthViewProjMatrices[i];
 			}
 		}
 		// END META SECTION - XR Soft Occlusions
@@ -1438,7 +1440,15 @@ void FMobileSceneRenderer::RenderForwardSinglePass(FRDGBuilder& GraphBuilder, FM
 		const int32 SecondViewIndex = ViewContext.ViewIndex + 1;
 		ensure(SecondViewIndex < Views.Num());
 		ViewContext.ViewInfo->SecondViewportView = &Views[SecondViewIndex];
-		PassParameters->RenderTargets.ResolveRect2 = FResolveRect(ViewContext.ViewInfo->SecondViewportView->ViewRect);
+
+		FIntRect ScissorRects[2] = { ViewContext.ViewInfo->ViewRect, ViewContext.ViewInfo->SecondViewportView->ViewRect };
+
+		// Disabling as this causes graphic corruption on right side of right eye in some apps. Needs further investigation. 
+		//GEngine->StereoRenderingDevice->CalculateScissorRect(ViewContext.ViewIndex, ViewContext.ViewInfo->ViewRect, ScissorRects[0]);
+		//GEngine->StereoRenderingDevice->CalculateScissorRect(SecondViewIndex, ViewContext.ViewInfo->SecondViewportView->ViewRect, ScissorRects[1]);
+
+		PassParameters->RenderTargets.ResolveRect = FResolveRect(ScissorRects[0]);
+		PassParameters->RenderTargets.ResolveRect2 = FResolveRect(ScissorRects[1]);
 	}
 	// END META SECTION - Multi-View Per View Viewports / Render Areas
 	
@@ -1841,6 +1851,7 @@ void FMobileSceneRenderer::RenderDeferred(FRDGBuilder& GraphBuilder, const FSort
 			for (int i = 0; i < 2; ++i)
 			{
 				MobileBasePassTextures.ScreenToDepthMatrices[i] = FMatrix44f::Identity;
+				MobileBasePassTextures.DepthViewProjMatrices[i] = FMatrix44f::Identity;
 			}
 		}
 		else
@@ -1850,6 +1861,7 @@ void FMobileSceneRenderer::RenderDeferred(FRDGBuilder& GraphBuilder, const FSort
 			for (int i = 0; i < 2; ++i)
 			{
 				MobileBasePassTextures.ScreenToDepthMatrices[i] = SceneTextures.ScreenToDepthMatrices[i];
+				MobileBasePassTextures.DepthViewProjMatrices[i] = SceneTextures.DepthViewProjMatrices[i];
 			}
 		}
 		// END META SECTION - XR Soft Occlusions

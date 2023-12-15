@@ -100,6 +100,11 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "OculusXR|Scene Actor")
 	bool bPopulateSceneOnBeginPlay = true;
 
+	// If true then when the scene model is loaded we will only attempt to populate the room the user is standing in.
+	// Otherwise all rooms and all scene anchors will be loaded.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "OculusXR|Scene Actor")
+	bool bActiveRoomOnly = true;
+
 	UPROPERTY(EditAnywhere, Category = "OculusXR|Scene Actor")
 	TMap<FString, FOculusXRSpawnedSceneAnchorProperties> ScenePlaneSpawnedSceneAnchorProperties;
 
@@ -121,6 +126,11 @@ private:
 
 	EOculusXRAnchorResult::Type QueryRoomUUIDs(const FOculusXRUInt64 RoomSpaceID, const TArray<FOculusXRUUID>& RoomUUIDs);
 	void SceneRoomQueryComplete(EOculusXRAnchorResult::Type AnchorResult, const TArray<FOculusXRSpaceQueryResult>& QueryResults, const FOculusXRUInt64 RoomSpaceID);
+
+	void StartSingleRoomQuery(FOculusXRUInt64 RoomSpaceID, FOculusXRRoomLayout RoomLayout);
+	EOculusXRAnchorResult::Type QueryFloorForActiveRoom(FOculusXRUInt64 RoomSpaceID, FOculusXRRoomLayout RoomLayout);
+	void ActiveRoomFloorQueryComplete(EOculusXRAnchorResult::Type AnchorResult, const TArray<FOculusXRSpaceQueryResult>& QueryResults, FOculusXRUInt64 RoomSpaceID, FOculusXRRoomLayout RoomLayout);
+	bool PointInPolygon2D(FVector2f PointToTest, const TArray<FVector2f>& PolyVerts) const;
 
 	void GetSemanticClassifications(uint64 Space, TArray<FString>& OutSemanticLabels) const;
 

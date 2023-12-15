@@ -873,17 +873,13 @@ bool UOculusXRFunctionLibrary::IsColorPassthroughSupported()
 	return false;
 }
 
-void UOculusXRFunctionLibrary::StartEnvironmentDepth(bool RemoveHands)
+void UOculusXRFunctionLibrary::StartEnvironmentDepth()
 {
 #if OCULUS_HMD_SUPPORTED_PLATFORMS
 	OculusXRHMD::FOculusXRHMD* OculusXRHMD = GetOculusXRHMD();
 	if (OculusXRHMD != nullptr)
 	{
 		int CreateFlags = 0;
-		if (RemoveHands)
-		{
-			CreateFlags |= ovrpEnvironmentDepthCreateFlag_RemoveHands;
-		}
 		OculusXRHMD->StartEnvironmentDepth(CreateFlags);
 	}
 #endif
@@ -896,6 +892,29 @@ void UOculusXRFunctionLibrary::StopEnvironmentDepth()
 	if (OculusXRHMD != nullptr)
 	{
 		OculusXRHMD->StopEnvironmentDepth();
+	}
+#endif
+}
+
+bool UOculusXRFunctionLibrary::IsEnvironmentDepthStarted()
+{
+#if OCULUS_HMD_SUPPORTED_PLATFORMS
+	OculusXRHMD::FOculusXRHMD* OculusXRHMD = GetOculusXRHMD();
+	if (OculusXRHMD != nullptr)
+	{
+		return OculusXRHMD->IsEnvironmentDepthStarted();
+	}
+#endif
+	return false;
+}
+
+void UOculusXRFunctionLibrary::SetEnvironmentDepthHandRemoval(bool RemoveHands)
+{
+#if OCULUS_HMD_SUPPORTED_PLATFORMS
+	OculusXRHMD::FOculusXRHMD* OculusXRHMD = GetOculusXRHMD();
+	if (OculusXRHMD != nullptr)
+	{
+		OculusXRHMD->SetEnvironmentDepthHandRemoval(RemoveHands);
 	}
 #endif
 }
@@ -929,6 +948,9 @@ void UOculusXRFunctionLibrary::SetEyeBufferSharpenType(EOculusXREyeBufferSharpen
 				break;
 			case EOculusXREyeBufferSharpenType::SLST_Quality:
 				FOculusXRHMDModule::GetPluginWrapper().SetEyeBufferSharpenType(ovrpLayerSubmitFlag_QualitySharpen);
+				break;
+			case EOculusXREyeBufferSharpenType::SLST_Auto:
+				FOculusXRHMDModule::GetPluginWrapper().SetEyeBufferSharpenType(ovrpLayerSubmitFlag_AutoLayerFilter);
 				break;
 			default:
 				FOculusXRHMDModule::GetPluginWrapper().SetEyeBufferSharpenType(ovrpLayerSubmitFlags(0));

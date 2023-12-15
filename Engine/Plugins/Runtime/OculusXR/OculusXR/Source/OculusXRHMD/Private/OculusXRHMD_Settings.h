@@ -80,6 +80,7 @@ namespace OculusXRHMD
 				/** Whether Scene can be used with the app */
 				uint64 bSceneSupportEnabled : 1;
 
+
 				/** Whether body tracking functionality can be used with the app */
 				uint64 bBodyTrackingEnabled : 1;
 
@@ -88,6 +89,9 @@ namespace OculusXRHMD
 
 				/** Whether face tracking functionality can be used with the app */
 				uint64 bFaceTrackingEnabled : 1;
+
+				/** Whether tile turn off can be used with the app */
+				uint64 bTileTurnOffEnabled : 1;
 			};
 			uint64 Raw;
 		} Flags;
@@ -121,6 +125,8 @@ namespace OculusXRHMD
 		bool bDynamicFoveatedRendering;
 		bool bSupportEyeTrackedFoveatedRendering;
 
+		ESystemSplashBackgroundType SystemSplashBackground;
+
 		EOculusXRXrApi XrApi;
 		EOculusXRColorSpace ColorSpace;
 		EOculusXRControllerPoseAlignment ControllerPoseAlignment;
@@ -140,6 +146,10 @@ namespace OculusXRHMD
 
 		EProcessorFavor ProcessorFavor;
 
+		EOculusXRHMDBodyTrackingFidelity BodyTrackingFidelity;
+		EOculusXRHMDBodyJointSet BodyTrackingJointSet;
+
+		TSet<EFaceTrackingDataSourceConfig> FaceTrackingDataSource;
 
 	public:
 		FSettings();

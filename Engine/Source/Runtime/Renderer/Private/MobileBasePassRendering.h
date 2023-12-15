@@ -38,6 +38,7 @@ struct FMobileBasePassTextures
 	FRDGTextureRef EnvironmentDepthTexture = nullptr;
 	FVector2f DepthFactors{ -1.0f, 1.0f };
 	FMatrix44f ScreenToDepthMatrices[2]{{},{}};
+	FMatrix44f DepthViewProjMatrices[2]{{},{}};
 	// END META SECTION - XR Soft Occlusions
 };
 

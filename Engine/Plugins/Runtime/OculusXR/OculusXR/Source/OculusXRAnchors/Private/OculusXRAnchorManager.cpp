@@ -46,6 +46,7 @@ namespace OculusXRAnchors
 		static const int32 MaxComponentTypesInFilter = 16;
 
 		ovrpSpaceQueryInfo Result;
+
 		Result.queryType = ovrpSpaceQueryType_Action;
 		Result.actionType = ovrpSpaceQueryActionType_Load;
 
@@ -77,6 +78,7 @@ namespace OculusXRAnchors
 				Result.filterType = ovrpSpaceQueryFilterType_Components;
 				break;
 		}
+
 
 		Result.IdInfo.numIds = FMath::Min(MaxIdsInFilter, UEQueryInfo.IDFilter.Num());
 		for (int i = 0; i < Result.IdInfo.numIds; ++i)
@@ -366,6 +368,19 @@ namespace OculusXRAnchors
 		ovrpUInt64 OvrpOutRequestId = 0;
 
 		const ovrpUInt64 OVRPSpace = Space;
+
+		// validate existing status
+		ovrpBool isEnabled = false;
+		ovrpBool changePending = false;
+		const ovrpResult getComponentStatusResult = FOculusXRHMDModule::GetPluginWrapper().GetSpaceComponentStatus(&OVRPSpace, ovrpType, &isEnabled, &changePending);
+
+		bool isStatusChangingOrSame = (static_cast<bool>(isEnabled) == Enable && !changePending) || (static_cast<bool>(isEnabled) != Enable && changePending);
+		if (OVRP_SUCCESS(getComponentStatusResult) && isStatusChangingOrSame)
+		{
+			return EOculusXRAnchorResult::Success;
+		}
+
+		// set status
 		const ovrpResult Result = FOculusXRHMDModule::GetPluginWrapper().SetSpaceComponentStatus(
 			&OVRPSpace,
 			ovrpType,
@@ -398,6 +413,42 @@ namespace OculusXRAnchors
 		OutChangePending = (OutOvrpChangePending == ovrpBool_True);
 
 		return static_cast<EOculusXRAnchorResult::Type>(Result);
+	}
+
+	EOculusXRAnchorResult::Type FOculusXRAnchorManager::GetSupportedAnchorComponents(uint64 Handle, TArray<EOculusXRSpaceComponentType>& OutSupportedTypes)
+	{
+		if (!FOculusXRHMDModule::GetPluginWrapper().GetInitialized())
+		{
+			return EOculusXRAnchorResult::Failure;
+		}
+
+		ovrpSpace ovrSpace = Handle;
+		TArray<ovrpSpaceComponentType> ovrComponentTypes;
+		ovrpUInt32 input = 0;
+		ovrpUInt32 output = 0;
+
+		ovrpResult enumerateResult = FOculusXRHMDModule::GetPluginWrapper().EnumerateSpaceSupportedComponents(&ovrSpace, input, &output, nullptr);
+		if (!OVRP_SUCCESS(enumerateResult))
+		{
+			return static_cast<EOculusXRAnchorResult::Type>(enumerateResult);
+		}
+
+		input = output;
+		ovrComponentTypes.SetNumZeroed(output);
+
+		enumerateResult = FOculusXRHMDModule::GetPluginWrapper().EnumerateSpaceSupportedComponents(&ovrSpace, input, &output, ovrComponentTypes.GetData());
+		if (!OVRP_SUCCESS(enumerateResult))
+		{
+			return static_cast<EOculusXRAnchorResult::Type>(enumerateResult);
+		}
+
+		OutSupportedTypes.SetNumZeroed(ovrComponentTypes.Num());
+		for (int i = 0; i < ovrComponentTypes.Num(); ++i)
+		{
+			OutSupportedTypes[i] = ConvertToUe4ComponentType(ovrComponentTypes[i]);
+		}
+
+		return static_cast<EOculusXRAnchorResult::Type>(enumerateResult);
 	}
 
 	EOculusXRAnchorResult::Type FOculusXRAnchorManager::SaveAnchor(uint64 Space,
@@ -511,10 +562,11 @@ namespace OculusXRAnchors
 
 	EOculusXRAnchorResult::Type FOculusXRAnchorManager::QuerySpaces(const FOculusXRSpaceQueryInfo& QueryInfo, uint64& OutRequestId)
 	{
-		ovrpSpaceQueryInfo ovrQueryInfo = ConvertToOVRPSpaceQueryInfo(QueryInfo);
-
 		ovrpUInt64 OvrpOutRequestId = 0;
-		const ovrpResult QuerySpacesResult = FOculusXRHMDModule::GetPluginWrapper().QuerySpaces(&ovrQueryInfo, &OvrpOutRequestId);
+		ovrpResult QuerySpacesResult = ovrpFailure;
+		ovrpSpaceQueryInfo ovrQueryInfo = ConvertToOVRPSpaceQueryInfo(QueryInfo);
+		QuerySpacesResult = FOculusXRHMDModule::GetPluginWrapper().QuerySpaces(&ovrQueryInfo, &OvrpOutRequestId);
+
 		memcpy(&OutRequestId, &OvrpOutRequestId, sizeof(uint64));
 
 		UE_LOG(LogOculusXRAnchors, Verbose, TEXT("Query Spaces\n ovrpSpaceQueryInfo:\n\tQueryType: %d\n\tMaxQuerySpaces: %d\n\tTimeout: %f\n\tLocation: %d\n\tActionType: %d\n\tFilterType: %d\n\n\tRequest ID: %llu"),

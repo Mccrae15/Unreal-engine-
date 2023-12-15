@@ -277,7 +277,7 @@ float4 SampleSceneColor(float2 SceneUV, float ArrayIndex)
 	#else
 		#if VULKAN_PROFILE
 			#ifndef SUBPASS_MSAA_SAMPLES
-				return float4(1.0, 1.0, 1.0, 1.0);
+				return float4(VulkanSubpassFetch0());
 			#else
 				#if SUBPASS_MSAA_SAMPLES == 8
 					return float4(VulkanSubpassFetch0(0) + VulkanSubpassFetch0(1) + VulkanSubpassFetch0(2) + VulkanSubpassFetch0(3) +
@@ -287,7 +287,7 @@ float4 SampleSceneColor(float2 SceneUV, float ArrayIndex)
 				#elif SUBPASS_MSAA_SAMPLES == 2
 					return float4(VulkanSubpassFetch0(0) + VulkanSubpassFetch0(1)) * 0.5;
 				#else
-					return float4(VulkanSubpassFetch0(0));
+					return float4(VulkanSubpassFetch0());
 				#endif
 			#endif
 		#else

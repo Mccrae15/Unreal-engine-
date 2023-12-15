@@ -91,6 +91,12 @@ UOculusXRFaceTrackingComponent::UOculusXRFaceTrackingComponent()
 	ExpressionNames.Add(EOculusXRFaceExpression::UpperLidRaiserR, "upperLidRaiser_R");
 	ExpressionNames.Add(EOculusXRFaceExpression::UpperLipRaiserL, "upperLipRaiser_L");
 	ExpressionNames.Add(EOculusXRFaceExpression::UpperLipRaiserR, "upperLipRaiser_R");
+	ExpressionNames.Add(EOculusXRFaceExpression::TongueTipInterdental, "tongueTipInterdental");
+	ExpressionNames.Add(EOculusXRFaceExpression::TongueTipAlveolar, "tongueTipAlveolar");
+	ExpressionNames.Add(EOculusXRFaceExpression::TongueFrontDorsalPalate, "tongueFrontDorsalPalate");
+	ExpressionNames.Add(EOculusXRFaceExpression::TongueMidDorsalPalate, "tongueMidDorsalPalate");
+	ExpressionNames.Add(EOculusXRFaceExpression::TongueBackDorsalVelar, "tongueBackDorsalVelar");
+	ExpressionNames.Add(EOculusXRFaceExpression::TongueOut, "tongueOut");
 
 	const int defaultFaceExpressionModifierLength = 33;
 	ExpressionModifiers.SetNum(defaultFaceExpressionModifierLength);

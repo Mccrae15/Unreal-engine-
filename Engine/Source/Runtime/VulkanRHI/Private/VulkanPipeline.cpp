@@ -1250,7 +1250,7 @@ bool FVulkanPipelineStateCacheManager::CreateGfxPipelineFromEntry(FVulkanRHIGrap
 	uint32_t NumViewports = 1;
 
 #if VULKAN_SUPPORTS_MULTIVIEW_PER_VIEW_VIEWPORTS
-	if (Device->GetOptionalExtensions().HasQcomMultiviewPerViewViewports)
+	if (GSupportsMultiViewPerViewViewports)
 	{
 		NumViewports = 2;
 	}

@@ -22,6 +22,7 @@ void SetupEnvironmentDepthUniformParameters(const class FSceneView& View, const 
 	for (int i = 0; i < 2; ++i)
 	{
 		OutParameters.ScreenToDepthMatrices[i] = MobileBasePassTextures.ScreenToDepthMatrices[i];
+		OutParameters.DepthViewProjMatrices[i] = MobileBasePassTextures.DepthViewProjMatrices[i];
 	}
 }
 

@@ -14,6 +14,7 @@ UOculusXRHMDRuntimeSettings::UOculusXRHMDRuntimeSettings(const FObjectInitialize
 #if OCULUS_HMD_SUPPORTED_PLATFORMS
 	// FSettings is the sole source of truth for Oculus default settings
 	OculusXRHMD::FSettings DefaultSettings;
+	SystemSplashBackground = DefaultSettings.SystemSplashBackground;
 	bSupportsDash = DefaultSettings.Flags.bSupportsDash;
 	bCompositesDepth = DefaultSettings.Flags.bCompositeDepth;
 	bHQDistortion = DefaultSettings.Flags.bHQDistortion;
@@ -43,13 +44,18 @@ UOculusXRHMDRuntimeSettings::UOculusXRHMDRuntimeSettings(const FObjectInitialize
 	bAnchorSharingEnabled = DefaultSettings.Flags.bAnchorSharingEnabled;
 	bSceneSupportEnabled = DefaultSettings.Flags.bSceneSupportEnabled;
 	ProcessorFavor = DefaultSettings.ProcessorFavor;
+	bTileTurnOffEnabled = DefaultSettings.Flags.bTileTurnOffEnabled;
 
+
+	FaceTrackingDataSource.Empty(static_cast<int8>(EFaceTrackingDataSourceConfig::MAX));
+	FaceTrackingDataSource.Append(DefaultSettings.FaceTrackingDataSource);
 
 	// Default this to false, FSettings doesn't have a separate composite depth flag for mobile
 	bCompositeDepthMobile = false;
 
 #else
 	// Some set of reasonable defaults, since blueprints are still available on non-Oculus platforms.
+	SystemSplashBackground = ESystemSplashBackgroundType::Black;
 	bSupportsDash = false;
 	bCompositesDepth = false;
 	bHQDistortion = false;
@@ -81,6 +87,7 @@ UOculusXRHMDRuntimeSettings::UOculusXRHMDRuntimeSettings(const FObjectInitialize
 	bAnchorSharingEnabled = false;
 	bSceneSupportEnabled = false;
 	ProcessorFavor = EProcessorFavor::FavorEqually;
+	bTileTurnOffEnabled = false;
 #endif
 
 	LoadFromIni();

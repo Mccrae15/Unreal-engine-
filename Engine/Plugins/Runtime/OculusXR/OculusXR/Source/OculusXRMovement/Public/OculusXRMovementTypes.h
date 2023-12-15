@@ -8,9 +8,22 @@ LICENSE file in the root directory of this source tree.
 #pragma once
 
 #include "CoreMinimal.h"
-
 #include "OculusXRMovementTypes.generated.h"
 
+UENUM(BlueprintType)
+enum class EOculusXRBodyJointSet : uint8
+{
+	UpperBody = 0,
+	FullBody = 1
+};
+
+UENUM(BlueprintType)
+enum class EOculusXRBodyTrackingFidelity : uint8
+{
+	Unset = 0 UMETA(Hidden),
+	Low = 1,
+	High = 2,
+};
 
 UENUM(BlueprintType)
 enum class EOculusXRBoneID : uint8
@@ -85,7 +98,21 @@ enum class EOculusXRBoneID : uint8
 	BodyRightHandLittleIntermediate = 67,
 	BodyRightHandLittleDistal = 68,
 	BodyRightHandLittleTip = 69,
-	COUNT = 70 UMETA(Hidden),
+	BodyLeftUpperLeg = 70,
+	BodyLeftLowerLeg = 71,
+	BodyLeftFootAnkleTwist = 72,
+	BodyLeftFootAnkle = 73,
+	BodyLeftFootSubtalar = 74,
+	BodyLeftFootTransverse = 75,
+	BodyLeftFootBall = 76,
+	BodyRightUpperLeg = 77,
+	BodyRightLowerLeg = 78,
+	BodyRightFootAnkleTwist = 79,
+	BodyRightFootAnkle = 80,
+	BodyRightFootSubtalar = 81,
+	BodyRightFootTransverse = 82,
+	BodyRightFootBall = 83,
+	COUNT = 84 UMETA(Hidden),
 };
 
 USTRUCT(BlueprintType)
@@ -128,6 +155,14 @@ public:
 
 	UPROPERTY(BlueprintReadOnly, Category = "OculusXR|Movement")
 	TArray<FOculusXRBodyJoint> Joints;
+};
+
+UENUM(BlueprintType)
+enum class EFaceTrackingDataSource : uint8
+{
+	Visual = 0 UMETA(DisplayName = "Visual"),
+	Audio = 1 UMETA(DisplayName = "Audio"),
+	MAX = 2 UMETA(Hidden),
 };
 
 UENUM(BlueprintType)
@@ -197,7 +232,14 @@ enum class EOculusXRFaceExpression : uint8
 	UpperLidRaiserR = 60,
 	UpperLipRaiserL = 61,
 	UpperLipRaiserR = 62,
-	COUNT = 63 UMETA(Hidden),
+	TongueTipInterdental = 63,
+	TongueTipAlveolar = 64,
+	TongueFrontDorsalPalate = 65,
+	TongueMidDorsalPalate = 66,
+	TongueBackDorsalVelar = 67,
+	TongueOut = 68,
+	TongueRetreat = 69,
+	COUNT = 70 UMETA(Hidden),
 };
 
 UENUM(BlueprintType)
@@ -229,6 +271,9 @@ public:
 
 	UPROPERTY(BlueprintReadOnly, Category = "OculusXR|Movement")
 	float Time;
+
+	UPROPERTY(BlueprintReadOnly, Category = "OculusXR|Movement")
+	EFaceTrackingDataSource DataSource;
 };
 
 USTRUCT(BlueprintType)

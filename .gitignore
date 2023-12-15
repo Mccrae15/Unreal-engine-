@@ -279,6 +279,7 @@ Saved/
 
 # Ignore Rider directories
 /Engine/Plugins/Developer/RiderLink
+Engine/Plugins/Marketplace/Developer/RiderLink
 
 # Annoying windows files
 [Dd]esktop.ini
@@ -307,3 +308,6 @@ Collaboration/Oculus/SamplesInternal
 
 # Ignore VoiceSDK Template
 Templates/TP_VoiceSDK
+
+# Ignore MixedReality Template
+Templates/TP_MixedReality

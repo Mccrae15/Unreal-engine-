@@ -1024,7 +1024,7 @@ FVulkanRenderTargetLayout::FVulkanRenderTargetLayout(FVulkanDevice& InDevice, co
 
 	bool bSetExtent = false;
 	bool bFoundClearOp = false;
-	bool bMultiviewRenderTargets = false;
+	bool bNonMultiviewRenderTargets = false;
 
 	int32 NumColorRenderTargets = RPInfo.GetNumColorRenderTargets();
 	for (int32 Index = 0; Index < NumColorRenderTargets; ++Index)
@@ -1057,8 +1057,8 @@ FVulkanRenderTargetLayout::FVulkanRenderTargetLayout(FVulkanDevice& InDevice, co
 		ensure(!NumSamples || NumSamples == ColorEntry.RenderTarget->GetNumSamples());
 		NumSamples = ColorEntry.RenderTarget->GetNumSamples();
 
-		ensure(!GetIsMultiView() || !bMultiviewRenderTargets || Texture->GetNumberOfArrayLevels() > 1);
-		bMultiviewRenderTargets = Texture->GetNumberOfArrayLevels() > 1;
+		bNonMultiviewRenderTargets |= Texture->GetNumberOfArrayLevels() == 1;
+		ensure(MultiViewCount == 0 || MultiViewCount == Texture->GetNumberOfArrayLevels());
 
 		VkAttachmentDescription& CurrDesc = Desc[NumAttachmentDescriptions];
 		CurrDesc.samples = static_cast<VkSampleCountFlagBits>(NumSamples);
@@ -1212,6 +1212,9 @@ FVulkanRenderTargetLayout::FVulkanRenderTargetLayout(FVulkanDevice& InDevice, co
 			Extent.Extent3D.height = TextureDesc.Extent.Y;
 			Extent.Extent3D.depth = TextureDesc.Depth;
 		}
+
+		bNonMultiviewRenderTargets |= Texture->GetNumberOfArrayLevels() == 1;
+		ensure(MultiViewCount == 0 || MultiViewCount == Texture->GetNumberOfArrayLevels());
 	}
 	else if (NumColorRenderTargets == 0)
 	{
@@ -1268,7 +1271,7 @@ FVulkanRenderTargetLayout::FVulkanRenderTargetLayout(FVulkanDevice& InDevice, co
 	CompatibleHashInfo.NumSamples = NumSamples;
 	CompatibleHashInfo.MultiViewCount = MultiViewCount;
 
-	if (MultiViewCount > 1 && !bMultiviewRenderTargets)
+	if (MultiViewCount > 1 && bNonMultiviewRenderTargets)
 	{
 		UE_LOG(LogVulkan, Error, TEXT("Non multiview textures on a multiview layout!"));
 	}

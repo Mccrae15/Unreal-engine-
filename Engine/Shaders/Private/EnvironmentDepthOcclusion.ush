@@ -3,8 +3,7 @@
 #define EnvironmentDepthParameters		MobileBasePass.EnvironmentDepthParameters
 #define EnvironmentDepthTexture			EnvironmentDepthParameters.EnvironmentDepthTexture
 #define EnvironmentDepthSampler			EnvironmentDepthParameters.EnvironmentDepthSampler
-#define DepthFactors					EnvironmentDepthParameters.DepthFactors
-#define ScreenToDepthMatrices			EnvironmentDepthParameters.ScreenToDepthMatrices
+#define DepthViewProjMatrices			EnvironmentDepthParameters.DepthViewProjMatrices
 
 /*
 Compare the environment depth against the screen depth. If the screen depth is closer then return 1.0.
@@ -78,15 +77,13 @@ float SampleDepthPoissonBlur(float3 TexCoord, float ScreenDepth)
 }
 
 
-float4 EnvironmentDepthOcclusion(float4 InputColor, float4 SvPosition, uint ViewId)
+float4 EnvironmentDepthOcclusion(float4 InputColor, float4 WorldPosition_CamRelative, uint ViewId)
 {
-	float2 BufferUV = SvPositionToBufferUV(SvPosition);
-
-	float4 TexCoordH = mul(ScreenToDepthMatrices[ViewId], float4(BufferUV.x, 1.0f - BufferUV.y, 0.0, 1.0));
-	float3 TexCoord = float3(TexCoordH.x / TexCoordH.w, TexCoordH.y / TexCoordH.w, ViewId);
-
-	// Adjust screen depth to same space as the environment depth
-	float ScreenDepth = (SvPosition.z - DepthFactors.y) / DepthFactors.x;
+	float4 DepthClipSpace = mul(WorldPosition_CamRelative, DepthViewProjMatrices[ViewId]);
+	float2 Normalized = (DepthClipSpace.xy / DepthClipSpace.w + 1.0f) * 0.5f;
+	float3 TexCoord = float3(Normalized, ViewId);
+	
+	float ScreenDepth = -DepthClipSpace.z / DepthClipSpace.w;
 
 	float PassthroughFraction = SampleDepthPoissonBlur(TexCoord, ScreenDepth);
 

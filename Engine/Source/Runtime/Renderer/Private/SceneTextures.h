@@ -105,6 +105,7 @@ struct FSceneTextures : public FMinimalSceneTextures
 	FRDGTextureRef EnvironmentDepthTexture{};
 	FVector2f DepthFactors{ -1.0f, 1.0f };
 	FMatrix44f ScreenToDepthMatrices[2]{};
+	FMatrix44f DepthViewProjMatrices[2]{};
 	// END META SECTION - XR Soft Occlusions
 
 	// Textures used to composite editor primitives. Also used by the base pass when in wireframe mode.

@@ -1028,7 +1028,7 @@ void Main(
 #elif USE_MULTI_VIEW_ID_INTERPOLANT
 	ViewId = BasePassInterpolants.MultiViewId;
 #endif
-	OutColor = EnvironmentDepthOcclusion(OutColor, SvPosition, ViewId);
+	OutColor = EnvironmentDepthOcclusion(OutColor, float4(MaterialParameters.WorldPosition_CamRelative, 1.0f), ViewId);
 #endif
 // END META SECTION - XR Soft Occlusions
 

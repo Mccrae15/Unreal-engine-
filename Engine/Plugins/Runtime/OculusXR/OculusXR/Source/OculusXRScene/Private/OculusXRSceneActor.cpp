@@ -3,6 +3,7 @@
 #include "OculusXRSceneActor.h"
 #include "OculusXRSceneModule.h"
 #include "OculusXRHMDModule.h"
+#include "OculusXRHMD.h"
 #include "OculusXRAnchorManager.h"
 #include "OculusXRAnchorTypes.h"
 #include "OculusXRAnchorBPFunctionLibrary.h"
@@ -437,10 +438,14 @@ void AOculusXRSceneActor::RoomLayoutQueryComplete(EOculusXRAnchorResult::Type An
 			continue;
 		}
 
-		EOculusXRAnchorResult::Type queryResult = QueryRoomUUIDs(QueryElement.Space.Value, roomLayout.RoomObjectUUIDs);
-		if (UOculusXRAnchorBPFunctionLibrary::IsAnchorResultSuccess(queryResult))
+		// If we're only loading the active room we start that floor check query here, otherwise do the room query
+		if (bActiveRoomOnly)
 		{
-			RoomLayouts.Add(QueryElement.Space.Value, std::move(roomLayout));
+			QueryFloorForActiveRoom(QueryElement.Space, roomLayout);
+		}
+		else
+		{
+			StartSingleRoomQuery(QueryElement.Space, roomLayout);
 		}
 	}
 }
@@ -565,6 +570,117 @@ void AOculusXRSceneActor::SceneRoomQueryComplete(EOculusXRAnchorResult::Type Anc
 			}
 		}
 	}
+}
+
+void AOculusXRSceneActor::StartSingleRoomQuery(FOculusXRUInt64 RoomSpaceID, FOculusXRRoomLayout RoomLayout)
+{
+	EOculusXRAnchorResult::Type queryResult = QueryRoomUUIDs(RoomSpaceID, RoomLayout.RoomObjectUUIDs);
+	if (UOculusXRAnchorBPFunctionLibrary::IsAnchorResultSuccess(queryResult))
+	{
+		RoomLayouts.Add(RoomSpaceID, std::move(RoomLayout));
+	}
+}
+
+EOculusXRAnchorResult::Type AOculusXRSceneActor::QueryFloorForActiveRoom(FOculusXRUInt64 RoomSpaceID, FOculusXRRoomLayout RoomLayout)
+{
+	EOculusXRAnchorResult::Type anchorQueryResult;
+	OculusXRAnchors::FOculusXRAnchors::QueryAnchors(
+		TArray<FOculusXRUUID>({ RoomLayout.FloorUuid }),
+		EOculusXRSpaceStorageLocation::Local,
+		FOculusXRAnchorQueryDelegate::CreateUObject(this, &AOculusXRSceneActor::ActiveRoomFloorQueryComplete, RoomSpaceID, RoomLayout),
+		anchorQueryResult);
+
+	return anchorQueryResult;
+}
+
+void AOculusXRSceneActor::ActiveRoomFloorQueryComplete(EOculusXRAnchorResult::Type AnchorResult, const TArray<FOculusXRSpaceQueryResult>& QueryResults, FOculusXRUInt64 RoomSpaceID, FOculusXRRoomLayout RoomLayout)
+{
+	if (QueryResults.Num() != 1)
+	{
+		UE_LOG(LogOculusXRScene, Error, TEXT("Wrong number of elements returned from query for floor UUID. Result count (%d), UUID (%s), Room Space ID (%llu)"), QueryResults.Num(), *RoomLayout.FloorUuid.ToString(), RoomSpaceID.Value);
+		return;
+	}
+
+	const FOculusXRSpaceQueryResult& floorQueryResult = QueryResults[0];
+
+	TArray<FString> semanticClassifications;
+	GetSemanticClassifications(floorQueryResult.Space.Value, semanticClassifications);
+	if (!semanticClassifications.Contains("FLOOR"))
+	{
+		UE_LOG(LogOculusXRScene, Error, TEXT("Queried floor in room doesn't contain a floor semantic label. UUID (%s), Room Space ID (%llu)"), *RoomLayout.FloorUuid.ToString(), RoomSpaceID.Value);
+		return;
+	}
+
+	EOculusXRAnchorResult::Type getBoundaryResult;
+	TArray<FVector2f> boundaryVertices;
+	if (!OculusXRAnchors::FOculusXRAnchors::GetSpaceBoundary2D(floorQueryResult.Space.Value, boundaryVertices, getBoundaryResult))
+	{
+		UE_LOG(LogOculusXRScene, Error, TEXT("Failed to get space boundary vertices for floor. UUID (%s), Room Space ID (%llu)"), *RoomLayout.FloorUuid.ToString(), RoomSpaceID.Value);
+		return;
+	}
+
+	OculusXRHMD::FOculusXRHMD* HMD = OculusXRHMD::FOculusXRHMD::GetOculusXRHMD();
+	check(HMD);
+
+	OculusXRHMD::FPose headPose;
+	HMD->GetCurrentPose(OculusXRHMD::ToExternalDeviceId(ovrpNode_Head), headPose.Orientation, headPose.Position);
+
+	TArray<FVector> convertedBoundaryPoints;
+
+	// Convert the boundary vertices to game engine world space
+	for (auto& it : boundaryVertices)
+	{
+		FTransform floorTransform;
+		UOculusXRAnchorBPFunctionLibrary::GetAnchorTransformByHandle(floorQueryResult.Space, floorTransform);
+
+		FVector pos = floorTransform.TransformPosition(FVector(0, it.X * HMD->GetWorldToMetersScale(), it.Y * HMD->GetWorldToMetersScale()));
+		convertedBoundaryPoints.Add(pos);
+	}
+
+	// Create the new 2D boundary
+	TArray<FVector2f> new2DBoundary;
+	for (auto& it : convertedBoundaryPoints)
+	{
+		new2DBoundary.Add(FVector2f(it.X, it.Y));
+	}
+
+	// Check if inside poly
+	if (!PointInPolygon2D(FVector2f(headPose.Position.X, headPose.Position.Y), new2DBoundary))
+	{
+		UE_LOG(LogOculusXRScene, Verbose, TEXT("Floor failed active room check. UUID (%s), Room Space ID (%llu)"), *RoomLayout.FloorUuid.ToString(), RoomSpaceID.Value);
+		return;
+	}
+
+	StartSingleRoomQuery(RoomSpaceID, RoomLayout);
+}
+
+bool AOculusXRSceneActor::PointInPolygon2D(FVector2f PointToTest, const TArray<FVector2f>& PolyVerts) const
+{
+	if (PolyVerts.Num() < 3)
+	{
+		return false;
+	}
+
+	int collision = 0;
+	float x = PointToTest.X;
+	float y = PointToTest.Y;
+
+	int vertCount = PolyVerts.Num();
+	for (int i = 0; i < vertCount; i++)
+	{
+		float x1 = PolyVerts[i].X;
+		float y1 = PolyVerts[i].Y;
+
+		float x2 = PolyVerts[(i + 1) % vertCount].X;
+		float y2 = PolyVerts[(i + 1) % vertCount].Y;
+
+		if (y < y1 != y < y2 && x < x1 + ((y - y1) / (y2 - y1)) * (x2 - x1))
+		{
+			collision += (y1 < y2) ? 1 : -1;
+		}
+	}
+
+	return collision != 0;
 }
 
 void AOculusXRSceneActor::GetSemanticClassifications(uint64 Space, TArray<FString>& OutSemanticLabels) const

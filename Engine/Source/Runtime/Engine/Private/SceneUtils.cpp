@@ -203,8 +203,6 @@ ENGINE_API uint32 GetDefaultMSAACount(const FStaticFeatureLevel InFeatureLevel, 
 
 			if (!bRendererSupportMSAA)
 			{
-				NumSamples = 1;
-
 				static bool bWarned = false;
 
 				if (!bWarned)
@@ -212,6 +210,8 @@ ENGINE_API uint32 GetDefaultMSAACount(const FStaticFeatureLevel InFeatureLevel, 
 					bWarned = true;
 					UE_LOG(LogSceneUtils, Log, TEXT("Requested %d samples for MSAA, but the platform doesn't support MSAA, failed reason : %s"), NumSamples, *FailedReason);
 				}
+
+				NumSamples = 1;
 			}
 		}
 	}

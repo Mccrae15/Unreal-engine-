@@ -98,6 +98,15 @@ static FAutoConsoleVariableRef CVarVulkanVariableRateShading(
 	ECVF_ReadOnly
 );
 
+int32 GVulkanEnableMultiviewPerViewViewports = 1;
+static FAutoConsoleVariableRef CVarVulkanEnableMultiviewPerViewViewports(
+	TEXT("r.Vulkan.EnableMultiviewPerViewViewports"),
+	GVulkanEnableMultiviewPerViewViewports,
+	TEXT("0 to disable multiview per view viewports")
+	TEXT("1 to enable multiview per view viewports (default)"),
+	ECVF_ReadOnly
+);
+
 bool GVulkanUseQcomFragmentDensityMapOffsets = false;
 FIntPoint GVulkanQcomFragmentDensityMapOffsets[2] = { {0, 0}, {0, 0} };
 
@@ -898,7 +907,7 @@ void FVulkanDynamicRHI::InitInstance()
 #endif
 		// BEGIN META SECTION - Multi-View Per View Viewports / Render Areas
 #if VULKAN_SUPPORTS_MULTIVIEW_PER_VIEW_VIEWPORTS
-		GSupportsMultiViewPerViewViewports = Device->GetOptionalExtensions().HasQcomMultiviewPerViewViewports ? true : false;
+		GSupportsMultiViewPerViewViewports = (GVulkanEnableMultiviewPerViewViewports && Device->GetOptionalExtensions().HasQcomMultiviewPerViewViewports) ? true : false;
 #endif
 		// END META SECTION - Multi-View Per View Viewports / Render Areas
 #if VULKAN_RHI_RAYTRACING

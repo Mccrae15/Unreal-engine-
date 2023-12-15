@@ -251,6 +251,7 @@ struct OculusPluginWrapper
 	OCULUS_DECLARE_ENTRY_POINT(GetEnvironmentDepthTextureDesc);
 	OCULUS_DECLARE_ENTRY_POINT(GetEnvironmentDepthTextureStageCount);
 	OCULUS_DECLARE_ENTRY_POINT(GetEnvironmentDepthTexture);
+	OCULUS_DECLARE_ENTRY_POINT(SetEnvironmentDepthHandRemoval);
 	OCULUS_DECLARE_ENTRY_POINT(StartEnvironmentDepth);
 	OCULUS_DECLARE_ENTRY_POINT(StopEnvironmentDepth);
 	OCULUS_DECLARE_ENTRY_POINT(GetEnvironmentDepthFrameDesc);
@@ -294,16 +295,18 @@ struct OculusPluginWrapper
 	OCULUS_DECLARE_ENTRY_POINT(GetBodyTrackingEnabled);
 	OCULUS_DECLARE_ENTRY_POINT(GetBodyTrackingSupported);
 	OCULUS_DECLARE_ENTRY_POINT(StopBodyTracking);
+	OCULUS_DECLARE_ENTRY_POINT(GetBodyState4);
+	OCULUS_DECLARE_ENTRY_POINT(GetFullBodyTrackingEnabled);
+	OCULUS_DECLARE_ENTRY_POINT(StartBodyTracking2);
+	OCULUS_DECLARE_ENTRY_POINT(RequestBodyTrackingFidelity);
+	OCULUS_DECLARE_ENTRY_POINT(ResetBodyTrackingCalibration);
+	OCULUS_DECLARE_ENTRY_POINT(SuggestBodyTrackingCalibrationOverride);
 
-	OCULUS_DECLARE_ENTRY_POINT(StartBodyTracking);
-	OCULUS_DECLARE_ENTRY_POINT(GetBodyState);
-
-	OCULUS_DECLARE_ENTRY_POINT(GetFaceTrackingEnabled);
-	OCULUS_DECLARE_ENTRY_POINT(GetFaceTrackingSupported);
-
-	OCULUS_DECLARE_ENTRY_POINT(GetFaceState);
-	OCULUS_DECLARE_ENTRY_POINT(StartFaceTracking);
-	OCULUS_DECLARE_ENTRY_POINT(StopFaceTracking);
+	OCULUS_DECLARE_ENTRY_POINT(GetFaceTracking2Enabled);
+	OCULUS_DECLARE_ENTRY_POINT(GetFaceTracking2Supported);
+	OCULUS_DECLARE_ENTRY_POINT(GetFaceState2);
+	OCULUS_DECLARE_ENTRY_POINT(StartFaceTracking2);
+	OCULUS_DECLARE_ENTRY_POINT(StopFaceTracking2);
 	OCULUS_DECLARE_ENTRY_POINT(GetEyeTrackingEnabled);
 	OCULUS_DECLARE_ENTRY_POINT(GetEyeTrackingSupported);
 	OCULUS_DECLARE_ENTRY_POINT(GetEyeGazesState);
@@ -319,6 +322,7 @@ struct OculusPluginWrapper
 	OCULUS_DECLARE_ENTRY_POINT(QplCreateMarkerHandle);
 	OCULUS_DECLARE_ENTRY_POINT(QplDestroyMarkerHandle);
 	OCULUS_DECLARE_ENTRY_POINT(OnEditorShutdown);
+	OCULUS_DECLARE_ENTRY_POINT(QplSetConsent);
 
 	//OVR_Plugin_Insight.h
 	OCULUS_DECLARE_ENTRY_POINT(InitializeInsightPassthrough);

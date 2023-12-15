@@ -17,48 +17,60 @@ class OCULUSXRMOVEMENT_API UOculusXRMovementFunctionLibrary : public UBlueprintF
 {
 	GENERATED_BODY()
 public:
-	UFUNCTION(BlueprintPure, Category = "OculusXR|Body")
+	UFUNCTION(BlueprintCallable, Category = "OculusXR|Body")
 	static bool TryGetBodyState(FOculusXRBodyState& outBodyState, float WorldToMeters = 100.0f);
 
-	UFUNCTION(BlueprintPure, Category = "OculusXR|Body")
+	UFUNCTION(BlueprintCallable, Category = "OculusXR|Body")
 	static bool IsBodyTrackingEnabled();
 
-	UFUNCTION(BlueprintPure, Category = "OculusXR|Body")
+	UFUNCTION(BlueprintCallable, Category = "OculusXR|Body")
 	static bool IsBodyTrackingSupported();
 
 	UFUNCTION(BlueprintCallable, Category = "OculusXR|Body")
+	static bool RequestBodyTrackingFidelity(EOculusXRBodyTrackingFidelity fidelity);
+
+	UFUNCTION(BlueprintCallable, Category = "OculusXR|Body")
+	static bool ResetBodyTrackingCalibration();
+
+	UFUNCTION(BlueprintCallable, Category = "OculusXR|Body")
+	static bool SuggestBodyTrackingCalibrationOverride(float height);
+
+	UFUNCTION(BlueprintCallable, Category = "OculusXR|Body")
+	static bool StartBodyTrackingByJointSet(EOculusXRBodyJointSet jointSet);
+
+	UFUNCTION(BlueprintCallable, meta = (DeprecatedFunction, DeprecationMessage = "StartBodyTracking is deprecated, use StartBodyTrackingByJointSet."), Category = "OculusXR|Body")
 	static bool StartBodyTracking();
 
 	UFUNCTION(BlueprintCallable, Category = "OculusXR|Body")
 	static bool StopBodyTracking();
 
-	UFUNCTION(BlueprintPure, Category = "OculusXR|Face")
+	UFUNCTION(BlueprintCallable, Category = "OculusXR|Face")
 	static bool TryGetFaceState(FOculusXRFaceState& outFaceState);
 
-	UFUNCTION(BlueprintPure, Category = "OculusXR|Face")
+	UFUNCTION(BlueprintCallable, Category = "OculusXR|Face")
 	static bool IsFaceTrackingEnabled();
 
-	UFUNCTION(BlueprintPure, Category = "OculusXR|Face")
+	UFUNCTION(BlueprintCallable, Category = "OculusXR|Face")
 	static bool IsFaceTrackingSupported();
 
-	UFUNCTION(BlueprintPure, Category = "OculusXR|Face")
+	UFUNCTION(BlueprintCallable, Category = "OculusXR|Face")
 	static bool StartFaceTracking();
 
-	UFUNCTION(BlueprintPure, Category = "OculusXR|Face")
+	UFUNCTION(BlueprintCallable, Category = "OculusXR|Face")
 	static bool StopFaceTracking();
 
-	UFUNCTION(BlueprintPure, Category = "OculusXR|Eyes")
+	UFUNCTION(BlueprintCallable, Category = "OculusXR|Eyes")
 	static bool TryGetEyeGazesState(FOculusXREyeGazesState& outEyeGazesState, float WorldToMeters = 100.0f);
 
-	UFUNCTION(BlueprintPure, Category = "OculusXR|Eyes")
+	UFUNCTION(BlueprintCallable, Category = "OculusXR|Eyes")
 	static bool IsEyeTrackingEnabled();
 
-	UFUNCTION(BlueprintPure, Category = "OculusXR|Eyes")
+	UFUNCTION(BlueprintCallable, Category = "OculusXR|Eyes")
 	static bool IsEyeTrackingSupported();
 
-	UFUNCTION(BlueprintPure, Category = "OculusXR|Eyes")
+	UFUNCTION(BlueprintCallable, Category = "OculusXR|Eyes")
 	static bool StartEyeTracking();
 
-	UFUNCTION(BlueprintPure, Category = "OculusXR|Eyes")
+	UFUNCTION(BlueprintCallable, Category = "OculusXR|Eyes")
 	static bool StopEyeTracking();
 };

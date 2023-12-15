@@ -28,6 +28,7 @@
 #include "Engine/StaticMeshActor.h"
 #include "XRThreadUtils.h"
 #include "ProceduralMeshComponent.h"
+#include "Shader.h"
 #include "Misc/EngineVersionComparison.h"
 #include "OculusXRHMD_FoveatedRendering.h"
 
@@ -209,8 +210,9 @@ namespace OculusXRHMD
 		virtual bool AllocateShadingRateTexture(uint32 Index, uint32 RenderSizeX, uint32 RenderSizeY, uint8 Format, uint32 NumMips, ETextureCreateFlags InTexFlags, ETextureCreateFlags InTargetableTextureFlags, FTexture2DRHIRef& OutTexture, FIntPoint& OutTextureSize) override;
 #ifdef WITH_OCULUS_BRANCH
 		virtual bool AllocateMotionVectorTexture(uint32 Index, uint8 Format, uint32 NumMips, ETextureCreateFlags InTexFlags, ETextureCreateFlags InTargetableTextureFlags, FTexture2DRHIRef& OutTexture, FIntPoint& OutTextureSize, FTexture2DRHIRef& OutDepthTexture, FIntPoint& OutDepthTextureSize) override;
-		virtual bool FindEnvironmentDepthTexture_RenderThread(FTextureRHIRef& OutTexture, FVector2f& OutDepthFactors, FMatrix44f OutScreenToDepthMatrices[2]) override;
+		virtual bool FindEnvironmentDepthTexture_RenderThread(FTextureRHIRef& OutTexture, FVector2f& OutDepthFactors, FMatrix44f OutScreenToDepthMatrices[2], FMatrix44f OutDepthViewProjMatrices[2]) override;
 #endif // WITH_OCULUS_BRANCH
+		virtual EPixelFormat GetActualColorSwapchainFormat() const override;
 
 		virtual void UpdateViewportWidget(bool bUseSeparateRenderTarget, const class FViewport& Viewport, class SViewport* ViewportWidget) override;
 		virtual FXRRenderBridge* GetActiveRenderBridge_GameThread(bool bUseSeparateRenderTarget);
@@ -250,6 +252,7 @@ namespace OculusXRHMD
 		virtual void PostSceneColorRenderingMobile_RenderThread(FRHICommandList& RHICmdList, FSceneView& InView) override;
 #endif
 #endif
+		virtual void PostRenderBasePassDeferred_RenderThread(FRDGBuilder& GraphBuilder, FSceneView& InView, const FRenderTargetBindingSlots& RenderTargets, TRDGUniformBufferRef<FSceneTextureUniformParameters> SceneTextures) override;
 		virtual int32 GetPriority() const override;
 #ifdef WITH_OCULUS_LATE_LATCHING
 		virtual bool LateLatchingEnabled() const override;
@@ -351,7 +354,7 @@ namespace OculusXRHMD
 		bool DoEnableStereo(bool bStereo);
 		void ResetControlRotation() const;
 		void UpdateFoveationOffsets_RenderThread();
-		bool ComputeEnvironmentDepthParameters_RenderThread(FVector2f& DepthFactors, FMatrix44f ScreenToDepth[ovrpEye_Count], int& SwapchainIndex);
+		bool ComputeEnvironmentDepthParameters_RenderThread(FVector2f& DepthFactors, FMatrix44f ScreenToDepth[ovrpEye_Count], FMatrix44f DepthViewProj[ovrpEye_Count], int& SwapchainIndex);
 #if UE_VERSION_OLDER_THAN(5, 3, 0)
 		void RenderHardOcclusions_RenderThread(FRHICommandListImmediate& RHICmdList, const FSceneView& InView);
 #else
@@ -450,8 +453,10 @@ namespace OculusXRHMD
 		void SetFoveatedRenderingMethod(EOculusXRFoveatedRenderingMethod InFoveationMethod);
 		void SetFoveatedRenderingLevel(EOculusXRFoveatedRenderingLevel InFoveationLevel, bool isDynamic);
 		void SetColorScaleAndOffset(FLinearColor ColorScale, FLinearColor ColorOffset, bool bApplyToAllLayers);
+		void SetEnvironmentDepthHandRemoval(bool RemoveHands);
 		void StartEnvironmentDepth(int CreateFlags);
 		void StopEnvironmentDepth();
+		bool IsEnvironmentDepthStarted();
 
 		void EnableHardOcclusions(bool bEnable);
 
@@ -486,6 +491,21 @@ namespace OculusXRHMD
 
 		void UpdateInsightPassthrough();
 		void ShutdownInsightPassthrough();
+
+		void DrawHmdViewMesh(
+			FRHICommandList& RHICmdList,
+			float X,
+			float Y,
+			float SizeX,
+			float SizeY,
+			float U,
+			float V,
+			float SizeU,
+			float SizeV,
+			FIntPoint TargetSize,
+			FIntPoint TextureSize,
+			int32 StereoView,
+			const TShaderRef<class FShader>& VertexShader);
 
 		union
 		{
@@ -537,6 +557,7 @@ namespace OculusXRHMD
 		// Stores TrackingToWorld from previous frame
 		FTransform LastTrackingToWorld;
 		std::atomic<bool> bHardOcclusionsEnabled;
+		std::atomic<bool> bEnvironmentDepthHandRemovalEnabled;
 
 		// These three properties indicate the current state of foveated rendering, which may differ from what's in Settings
 		// due to cases such as falling back to FFR when eye tracked foveated rendering isn't enabled. Will allow us to resume

@@ -410,6 +410,7 @@ void FDeferredShadingSceneRenderer::RenderHeterogeneousVolumes(
 		FRDGTextureDesc Desc = SceneTextures.Color.Target->Desc;
 		Desc.Format = PF_FloatRGBA;
 		Desc.Flags &= ~(TexCreate_FastVRAM);
+		Desc.Flags |= TexCreate_UAV;
 		FRDGTextureRef HeterogeneousVolumeRadiance = GraphBuilder.CreateTexture(Desc, TEXT("HeterogeneousVolumes"));
 		AddClearUAVPass(GraphBuilder, GraphBuilder.CreateUAV(HeterogeneousVolumeRadiance), FLinearColor::Transparent);
 

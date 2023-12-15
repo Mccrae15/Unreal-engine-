@@ -70,7 +70,7 @@ enum EStereoLayerSharpenType : int
 	SLST_None		UMETA(DisplayName = "No Sharpening"),
 
 	/** Normal Sharpening */
-	SLST_Normal	UMETA(DisplayName = "Normal Sharpening"),
+	SLST_Normal		UMETA(DisplayName = "Normal Sharpening"),
 
 	/** Quality Sharpening */
 	SLST_Quality	UMETA(DisplayName = "Quality Sharpening"),
@@ -305,6 +305,12 @@ public:
 
 	//~ Begin UActorComponent Interface
 	ENGINE_API virtual void TickComponent(float DeltaTime, enum ELevelTick TickType, FActorComponentTickFunction *ThisTickFunction) override;
+// BEGIN META SECTION - XR Layer MQSR
+#if WITH_EDITOR
+	ENGINE_API virtual void PreEditChange(FProperty* PropertyAboutToChange) override;
+	ENGINE_API virtual void PostEditChangeProperty(FPropertyChangedEvent & PropertyChangedEvent) override;
+#endif // WITH_EDITOR
+// END META SECTION - XR Layer MQSR
 	//~ End UActorComponent Interface
 
 	/** 
@@ -397,7 +403,11 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, AdvancedDisplay, Category = Rendering, DisplayName = "Bicubic Filtering")
 	uint32 bBicubicFiltering : 1;
 
-// BEGIN META SECTION - XR Layer GSR
+// BEGIN META SECTION - XR Layer MQSR
+	/**  True if this layer allows the runtime to automatically apply layer filter (Sharpen or Supersampling) to improve visual quality */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, AdvancedDisplay, Category = Rendering, DisplayName = "Auto Filtering")
+	bool bAutoFiltering;
+
 	/**  The super sample filter of this layer. This can help reduce flicker artifacts */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, AdvancedDisplay, Category = Rendering, DisplayName = "SuperSample Filtering")
 	TEnumAsByte<enum EStereoLayerSuperSamplingType> SuperSamplingType;
@@ -405,7 +415,7 @@ public:
 	/**  The sharpen filter of this layer. This amplifies contrast and fine details */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, AdvancedDisplay, Category = Rendering, DisplayName = "Sharpen Filtering")
 	TEnumAsByte<enum EStereoLayerSharpenType> SharpenType;
-// END META SECTION - XR Layer GSR
+// END META SECTION - XR Layer MQSR
 
 protected:
 	/** Texture displayed on the stereo layer (if stereoscopic textures are supported on the platform and more than one texture is provided, this will be the right eye) **/
@@ -468,7 +478,6 @@ protected:
 	
 	// returns if the layer requires a texture to operate
 	virtual bool LayerRequiresTexture() { return true; };
-
 private:
 	/** Dirty state determines whether the stereo layer needs updating **/
 	bool bIsDirty;
@@ -484,5 +493,13 @@ private:
 
 	/** Set if the component was loaded from an old version */
 	bool bNeedsPostLoadFixup;
+
+// BEGIN META SECTION - XR Layer MQSR
+	bool bOriginalAutoFiltering;
+	TEnumAsByte<enum EStereoLayerSuperSamplingType> OriginalSuperSamplingType;
+	TEnumAsByte<enum EStereoLayerSharpenType> OriginalSharpenType;
+
+	bool IsMQSRFilterValid();
+// END META SECTION - XR Layer MQSR
 };
 

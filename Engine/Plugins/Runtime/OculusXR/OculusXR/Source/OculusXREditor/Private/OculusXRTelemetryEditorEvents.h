@@ -12,4 +12,5 @@ LICENSE file in the root directory of this source tree.
 namespace OculusXRTelemetry::Events
 {
 	using FEditorStart = TMarker<191956532>;
-}
+	using FSimulator = TMarker<191963436>;
+} // namespace OculusXRTelemetry::Events

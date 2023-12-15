@@ -1152,12 +1152,12 @@ float3 VertexFactoryGetWorldNormal(FVertexFactoryInput Input, FVertexFactoryInte
 // @return previous translated world position
 float4 VertexFactoryGetPreviousWorldPosition(FVertexFactoryInput Input, FVertexFactoryIntermediates Intermediates)
 {
+	float4 PrevLocalPosition = Input.Position;
 // When VF_USE_PRIMITIVE_SCENE_DATA == 2, GetSceneDataIntermediates() in SceneData.ush doesn't populate PrevLocalToWorld in the instance data, so we need to use the primitive data instead
 #if (VF_USE_PRIMITIVE_SCENE_DATA == 2)
 	FLWCMatrix PreviousLocalToWorld = GetPrimitiveData(Intermediates).PreviousLocalToWorld;
 #else
 	FLWCMatrix PreviousLocalToWorld = GetInstanceData(Intermediates).PrevLocalToWorld;
-	float4 PrevLocalPosition = Input.Position;
 #endif // VF_USE_PRIMITIVE_SCENE_DATA
 
 // AppSpaceWarp

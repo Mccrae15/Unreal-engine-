@@ -44,4 +44,12 @@ namespace OculusXRTelemetry
 			}
 		});
 	}
+
+	void SetTelemetryConsent(bool Consent)
+	{
+		if (FOculusXRHMDModule::Get().IsOVRPluginAvailable() && FOculusXRHMDModule::GetPluginWrapper().IsInitialized())
+		{
+			FOculusXRHMDModule::GetPluginWrapper().QplSetConsent(Consent);
+		}
+	}
 } // namespace OculusXRTelemetry

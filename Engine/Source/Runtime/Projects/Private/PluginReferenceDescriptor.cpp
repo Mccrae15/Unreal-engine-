@@ -153,6 +153,16 @@ bool FPluginReferenceDescriptor::Read(const FJsonObject& Object, FText* OutFailR
 		bSuccess = false;
 	}
 
+
+	// BEGIN META SECTION - Read additional member to allow plugins 
+	// to be enable / disabled when used with the fork vs launcher version
+	bool bEnabledMetaXRBranch = false;
+	if (Object.TryGetBoolField("EnabledMetaXRBranch", bEnabledMetaXRBranch))
+	{
+		bEnabled = bEnabledMetaXRBranch;
+	}
+	// END META SECTION
+
 	// Read the optional field
 	Object.TryGetBoolField(TEXT("Optional"), bOptional);
 
