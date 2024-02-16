@@ -48,8 +48,8 @@ public:
 	/**
 	 * Shoot a ray and display the anchors coordinate system and labels that was hit by the ray if any.
 	 * Call HideAnchor() to get rid of the displayed anchor.
-	 * @Param Origin The ray origin.
-	 * @Param Direction The ray direction.
+	 * @param Origin The ray origin.
+	 * @param Direction The ray direction.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "MR Utility Kit")
 	void ShowAnchorAtRayHit(const FVector& Origin, const FVector& Direction);
@@ -64,8 +64,8 @@ public:
 	/**
 	 * Shoot a ray and display the anchors space that was hit by the ray if any.
 	 * Call HideAnchorSpace() to get rid of the displayed anchor space.
-	 * @Param Origin The ray origin.
-	 * @Param Direction The ray direction.
+	 * @param Origin The ray origin.
+	 * @param Direction The ray direction.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "MR Utility Kit")
 	void ShowAnchorSpaceAtRayHit(const FVector& Origin, const FVector& Direction);

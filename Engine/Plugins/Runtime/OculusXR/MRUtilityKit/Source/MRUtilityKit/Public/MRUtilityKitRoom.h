@@ -139,53 +139,55 @@ public:
 
 	/**
 	 * Check whether the position is inside the room or not.
-	 * @Param Position           The position in world space to check.
-	 * @Param TestVerticalBounds Whether the room should be constrained by vertical bounds or not in the check.
-	 * @Return                   Whether the position is inside the room or not.
+	 * @param Position           The position in world space to check.
+	 * @param TestVerticalBounds Whether the room should be constrained by vertical bounds or not in the check.
+	 * @return                   Whether the position is inside the room or not.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "MR Utility Kit")
 	bool IsPositionInRoom(const FVector& Position, bool TestVerticalBounds = true);
 
 	/**
 	 * Generate a uniform random position within the room.
-	 * @Param OutPosition			Contains the randomly generated position.
-	 * @Param MinDistanceToSurface	The minimum distance between the generated position and the closest surface/volume.
-	 * @Param AvoidVolumes			If true then the position will not be inside a volume and min distance away from it.
-	 * @Return						Return true if success otherwise false. If this fails it can be because the min distance to surface is too large.
+	 * @param OutPosition			Contains the randomly generated position.
+	 * @param MinDistanceToSurface	The minimum distance between the generated position and the closest surface/volume.
+	 * @param AvoidVolumes			If true then the position will not be inside a volume and min distance away from it.
+	 * @return						Return true if success otherwise false. If this fails it can be because the min distance to surface is too large.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "MR Utility Kit")
 	bool GenerateRandomPositionInRoom(FVector& OutPosition, float MinDistanceToSurface = 0.0f, bool AvoidVolumes = false);
 
 	/**
 	 * Generate a uniform random position within the room from a random stream.
-	 * @Param OutPosition			Contains the randomly generated position.
-	 * @Param RandomStream			A random generator used to generate the position on the plane.
-	 * @Param MinDistanceToSurface	The minimum distance between the generated position and the closest surface/volume.
-	 * @Param AvoidVolumes			If true then the position will not be inside a volume and min distance away from it.
-	 * @Return						Return true if success otherwise false. If this fails it can be because the min distance to surface is too large.
+	 * @param OutPosition			Contains the randomly generated position.
+	 * @param RandomStream			A random generator used to generate the position on the plane.
+	 * @param MinDistanceToSurface	The minimum distance between the generated position and the closest surface/volume.
+	 * @param AvoidVolumes			If true then the position will not be inside a volume and min distance away from it.
+	 * @return						Return true if success otherwise false. If this fails it can be because the min distance to surface is too large.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "MR Utility Kit")
 	bool GenerateRandomPositionInRoomFromStream(FVector& OutPosition, const FRandomStream& RandomStream, float MinDistanceToSurface = 0.0f, bool AvoidVolumes = false);
 
 	/**
 	 * Cast a ray and return the closest hit anchor
-	 * @Param Origin    Origin The origin of the ray.
-	 * @Param Direction Direction The direction of the ray.
-	 * @Param MaxDist   The maximum distance the ray should travel.
-	 * @Param OutHit    The closest hit.
-	 * @Return          The anchor that the ray hit.
+	 * @param Origin      Origin The origin of the ray.
+	 * @param Direction   Direction The direction of the ray.
+	 * @param MaxDist     The maximum distance the ray should travel.
+	 * @param LabelFilter The label filter can be used to include/exclude certain labels from the search.
+	 * @param OutHit      The closest hit.
+	 * @return            The anchor that the ray hit.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "MR Utility Kit", meta = (AutoCreateRefTerm = "LabelFilter"))
 	AMRUKAnchor* Raycast(const FVector& Origin, const FVector& Direction, float MaxDist, const FMRUKLabelFilter& LabelFilter, FMRUKHit& OutHit);
 
 	/**
 	 * Cast a ray and collect hits against the volume and plane bounds in this room. The order of the hits in the array is not specified.
-	 * @Param Origin     Origin The origin of the ray.
-	 * @Param Direction  Direction The direction of the ray.
-	 * @Param MaxDist    The maximum distance the ray should travel.
-	 * @Param OutHits    The hits the ray collected.
-	 * @Param OutAnchors The anchors that were hit. Each anchor in this array corresponds to a entry at the same position in OutHits.
-	 * @Return           Whether the ray hit anything
+	 * @param Origin      Origin The origin of the ray.
+	 * @param Direction   Direction The direction of the ray.
+	 * @param MaxDist     The maximum distance the ray should travel.
+	 * @param OutHits     The hits the ray collected.
+	 * @param LabelFilter The label filter can be used to include/exclude certain labels from the search.
+	 * @param OutAnchors  The anchors that were hit. Each anchor in this array corresponds to a entry at the same position in OutHits.
+	 * @return            Whether the ray hit anything
 	 */
 	UFUNCTION(BlueprintCallable, Category = "MR Utility Kit", meta = (AutoCreateRefTerm = "LabelFilter"))
 	bool RaycastAll(const FVector& Origin, const FVector& Direction, float MaxDist, const FMRUKLabelFilter& LabelFilter, TArray<FMRUKHit>& OutHits, TArray<AMRUKAnchor*>& OutAnchors);
@@ -198,8 +200,8 @@ public:
 
 	/**
 	 * Check if the room does have any of the labels.
-	 * @Param Labels The labels to check.
-	 * @Return Whether the label was found in the room.
+	 * @param Labels The labels to check.
+	 * @return Whether the label was found in the room.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "MR Utility Kit")
 	bool DoesRoomHave(const TArray<FString>& Labels);
@@ -217,37 +219,38 @@ public:
 	AMRUKAnchor* TryGetClosestSurfacePosition(const FVector& WorldPosition, FVector& OutSurfacePosition, double& OutSurfaceDistance, const FMRUKLabelFilter& LabelFilter, double MaxDistance = 0.0);
 
 	/**
-	 *	Checks if the given position is on or inside of any scene volume in the room.
-	 *  Floor, ceiling and wall anchors will be excluded from the search.
-	 *	@param WorldPosition      The position in world space to check
-	 *	@param TestVerticalBounds Whether the vertical bounds should be checked or not
-	 *	@return					  The anchor the WorldPosition is in. A null pointer otherwise.
+	 * Checks if the given position is on or inside of any scene volume in the room.
+	 * Floor, ceiling and wall anchors will be excluded from the search.
+	 * @param WorldPosition      The position in world space to check
+	 * @param TestVerticalBounds Whether the vertical bounds should be checked or not
+	 * @param Tolerance          Tolerance
+	 * @return					 The anchor the WorldPosition is in. A null pointer otherwise.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "MR Utility Kit")
 	AMRUKAnchor* IsPositionInSceneVolume(const FVector& WorldPosition, bool TestVerticalBounds = true, double Tolerance = 0.0);
 
 	/**
 	 * Finds the closest seat given a ray.
-	 * @Param RayOrigin The origin of the ray.
-	 * @Param RayDirection The direction of the ray.
-	 * @Param OutSeatTransform The seat pose.
-	 * @Return If any seat was found the Anchor that has seats available will be returned. Otherwise a null pointer.
+	 * @param RayOrigin The origin of the ray.
+	 * @param RayDirection The direction of the ray.
+	 * @param OutSeatTransform The seat pose.
+	 * @return If any seat was found the Anchor that has seats available will be returned. Otherwise a null pointer.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "MR Utility Kit")
 	AMRUKAnchor* TryGetClosestSeatPose(const FVector& RayOrigin, const FVector& RayDirection, FTransform& OutSeatTransform);
 
 	/**
 	 * Finds all anchors in this room that have the given label attached.
-	 * @Param Label The label to search for.
-	 * @Return      An array off anchors with the given label.
+	 * @param Label The label to search for.
+	 * @return      An array off anchors with the given label.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "MR Utility Kit")
 	TArray<AMRUKAnchor*> GetAnchorsByLabel(const FString& Label) const;
 
 	/**
 	 * Finds the first anchor in this room that has the given label attached.
-	 * @Param Label The label to search for.
-	 * @Return      If found, the Anchor that has the label attached. Otherwise a null pointer.
+	 * @param Label The label to search for.
+	 * @return      If found, the Anchor that has the label attached. Otherwise a null pointer.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "MR Utility Kit")
 	AMRUKAnchor* GetFirstAnchorByLabel(const FString& Label) const;
@@ -257,28 +260,29 @@ public:
 	 * There are different positioning modes available. Default just uses the position where the raycast
 	 * hit the object. Edge snaps the position to the edge that is nearest to the user and Center simply
 	 * centers the position on top of the surface.
-	 * @Param RayOrigin         The origin of the ray.
-	 * @Param RayDirection      The direction of the ray.
-	 * @Param MaxDist           The maximum distance the ray should travel.
-	 * @Param OutPose           The calculated pose.
-	 * @Param PositioningMethod The method that should be used for determining the position on the surface.
-	 * @Return                  The anchor that was hit by the ray if any. Otherwise a null pointer.
+	 * @param RayOrigin         The origin of the ray.
+	 * @param RayDirection      The direction of the ray.
+	 * @param MaxDist           The maximum distance the ray should travel.
+	 * @param LabelFilter       The label filter can be used to include/exclude certain labels from the search.
+	 * @param OutPose           The calculated pose.
+	 * @param PositioningMethod The method that should be used for determining the position on the surface.
+	 * @return                  The anchor that was hit by the ray if any. Otherwise a null pointer.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "MR Utility Kit", meta = (AutoCreateRefTerm = "LabelFilter"))
 	AMRUKAnchor* GetBestPoseFromRaycast(const FVector& RayOrigin, const FVector& RayDirection, double MaxDist, const FMRUKLabelFilter& LabelFilter, FTransform& OutPose, EMRUKPositioningMethod PositioningMethod = EMRUKPositioningMethod::Default);
 
 	/**
 	 * Return the longest wall in the room that has no other walls behind it.
-	 * @Param Tolerance The tolerance to use when determing wall that are behind.
-	 * @Return          The wall anchor that is the key wall in the room.
+	 * @param Tolerance The tolerance to use when determing wall that are behind.
+	 * @return          The wall anchor that is the key wall in the room.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "MR Utility Kit")
 	AMRUKAnchor* GetKeyWall(double Tolerance = 0.1);
 
 	/**
 	 * Return the largest surface for a given label.
-	 * @Param Label The label of the surfaces to search in.
-	 * @Return      The anchor that has the largest surface if any. Otherwise, a null pointer.
+	 * @param Label The label of the surfaces to search in.
+	 * @return      The anchor that has the largest surface if any. Otherwise, a null pointer.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "MR Utility Kit")
 	AMRUKAnchor* GetLargestSurface(const FString& Label) const;
@@ -286,6 +290,8 @@ public:
 	/**
 	 * Attach a procedural mesh to the walls. This is done at the room level to ensure the UV coordinates
 	 * can be done in a seamless way if desired.
+	 * @param WallTextureCoordinateModes Mode of the wall texture coordinates.
+	 * @param ProceduralMaterial Material to apply on top of the procedural mesh.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "MR Utility Kit", meta = (AutoCreateRefTerm = "WallTextureCoordinateModes"))
 	void AttachProceduralMeshToWalls(const TArray<FMRUKTexCoordModes>& WallTextureCoordinateModes, UMaterialInterface* ProceduralMaterial = nullptr);
@@ -294,51 +300,56 @@ public:
 	 * Spawn meshes on the position of the anchors of the room.
 	 * The actors should have Z as up Y as right and X as forward.
 	 * The pivot point should be in the bottom center.
-	 * @Param ActorClasses A map wich tells to spawn which actor to a given label.
-	 * @Return All spawned interior actors. 
+	 * @param SpawnGroups                A map wich tells to spawn which actor to a given label.
+	 * @param ProceduralMaterial         Material to apply on top of the procedural mesh if any.
+	 * @param ShouldFallbackToProcedural Whether or not it should by default fallback to generating a procedural mesh if no actor class has been specified for a label.
+	 * @return                           All spawned interior actors. 
 	 */
 	UFUNCTION(BlueprintCallable, Category = "MR Utility Kit")
-	TArray<AActor*> SpawnInterior(const TMap<FString, FMRUKSpawnGroup>& SpawnGroups, UMaterialInterface* ProceduralMaterial = nullptr);
+	TArray<AActor*> SpawnInterior(const TMap<FString, FMRUKSpawnGroup>& SpawnGroups, UMaterialInterface* ProceduralMaterial = nullptr, bool ShouldFallbackToProcedural = true);
 
 	/**
 	 * Spawn meshes on the position of the anchors of the room from a random stream.
 	 * The actors should have Z as up Y as right and X as forward.
 	 * The pivot point should be in the bottom center.
-	 * @Param ActorClasses A map wich tells to spawn which actor to a given label.
-	 * @Param RandomStream A random generator to choose randomly between actor classes if there a multiple for one label.
-	 * @Return All spawned interior actors. 
+	 * @param SpawnGroups                A map wich tells to spawn which actor to a given label.
+	 * @param RandomStream               A random generator to choose randomly between actor classes if there a multiple for one label.
+	 * @param ProceduralMaterial         Material to apply on top of the procedural mesh if any.
+	 * @param ShouldFallbackToProcedural Whether or not it should by default fallback to generating a procedural mesh if no actor class has been specified for a label.
+	 * @return                           All spawned interior actors. 
 	 */
 	UFUNCTION(BlueprintCallable, Category = "MR Utility Kit")
-	TArray<AActor*> SpawnInteriorFromStream(const TMap<FString, FMRUKSpawnGroup>& SpawnGroups, const FRandomStream& RandomStream, UMaterialInterface* ProceduralMaterial = nullptr);
+	TArray<AActor*> SpawnInteriorFromStream(const TMap<FString, FMRUKSpawnGroup>& SpawnGroups, const FRandomStream& RandomStream, UMaterialInterface* ProceduralMaterial = nullptr, bool ShouldFallbackToProcedural = true);
 
 	/**
 	 * Check if the given anchor is a wall anchor.
-	 * @Param Anchor The anchor to check.
-	 * @Return Whether the anchor is a wall anchor or not.
+	 * @param Anchor The anchor to check.
+	 * @return       Whether the anchor is a wall anchor or not.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "MR Utility Kit")
 	bool IsWallAnchor(AMRUKAnchor* Anchor) const;
 
 	/**
 	 * Compute the wall mesh texture coordinate adjustments that are needed to generate proper texture coordinates for the walls.
-	 * @Param WallTextureCoordinateModes The texture coordinate mode to use for the walls.
-	 * @Param OutAnchorsWithPlaneUVs The computed texture coordinate adjustment with the wall anchor.
+	 * @param WallTextureCoordinateModes The texture coordinate mode to use for the walls.
+	 * @param OutAnchorsWithPlaneUVs     The computed texture coordinate adjustment with the wall anchor.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "MR Utility Kit")
 	void ComputeWallMeshUVAdjustments(const TArray<FMRUKTexCoordModes>& WallTextureCoordinateModes, TArray<FMRUKAnchorWithPlaneUVs>& OutAnchorsWithPlaneUVs);
 
 	/**
 	 * Load the triangle mesh of the global mesh anchor.
-	 * @Param Material The Material to show if the global mesh is visible.
-	 * @Return On success true, otherwise false.
+	 * @param Material The Material to show if the global mesh is visible.
+	 * @return         On success true, otherwise false.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "MR Utility Kit")
 	bool LoadGlobalMeshFromDevice(UMaterialInterface* Material = nullptr);
 
 	/**
 	 * Load the triangle mesh of the global mesh anchor.
-	 * @Param JsonString The string with the JSON data.
-	 * @Return On Success true, otherwise false.
+	 * @param JsonString The string with the JSON data.
+	 * @param Material   Material to apply on the global mesh.
+	 * @return           On Success true, otherwise false.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "MR Utility Kit")
 	bool LoadGlobalMeshFromJsonString(const FString& JsonString, UMaterialInterface* Material = nullptr);

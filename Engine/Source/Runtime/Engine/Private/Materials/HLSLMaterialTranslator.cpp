@@ -2692,6 +2692,10 @@ FString FHLSLMaterialTranslator::GetMaterialShaderCode()
 		LazyPrintf.PushParam(TEXT("return 0"));
 	}
 
+	// BEGIN META SECTION - XR Soft Occlusions
+	LazyPrintf.PushParam(*FString::Printf(TEXT("return %.5f"), Material->GetXRSoftOcclusionsDepthBias()));
+	// END META SECTION - XR Soft Occlusions
+
 	LazyPrintf.PushParam(*FString::Printf(TEXT("return %.5f"), Material->GetTranslucencyDirectionalLightingIntensity()));
 
 	LazyPrintf.PushParam(*FString::Printf(TEXT("return %.5f"), Material->GetTranslucentShadowDensityScale()));
@@ -8009,7 +8013,8 @@ int32 FHLSLMaterialTranslator::StaticTerrainLayerWeight(FName LayerName,int32 De
 
 		// If there are multiple weight maps with the same name, they should be numbered to allow for unique masks
 		FName LayerNameTest = Parameter.LayerName;
-		LayerNameTest.SetNumber(0);
+		// COMMENT [jonathan.bard] Removed for 5.3 in order to fix UE-198494. Should not be integrated to any other branch : 
+		// LayerNameTest.SetNumber(0);
 
 		if(LayerNameTest != LayerName)
 		{

@@ -1,9 +1,4 @@
-/*
-Copyright (c) Meta Platforms, Inc. and affiliates.
-All rights reserved.
-This source code is licensed under the license found in the
-LICENSE file in the root directory of this source tree.
-*/
+// Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #pragma once
 
@@ -35,7 +30,7 @@ public:
 	void RegisterSettings();
 	void UnregisterSettings();
 
-	void PluginOpenPerfWindow();
+	void PluginOpenSetupToolWindow();
 	FReply PluginClickFn(bool text);
 
 	void PluginOpenPlatWindow();
@@ -49,7 +44,6 @@ public:
 	void StopSESServer();
 
 public:
-	static const FName OculusPerfTabName;
 	static const FName OculusPlatToolTabName;
 
 private:
@@ -58,7 +52,6 @@ private:
 	TSharedRef<SWidget> CreateXrSimToolbarEntryMenu(TSharedPtr<class FUICommandList> Commands);
 	void AddMenuExtension(FMenuBuilder& Builder);
 
-	TSharedRef<class SDockTab> OnSpawnPluginTab(const class FSpawnTabArgs& SpawnTabArgs);
 	TSharedRef<class SDockTab> OnSpawnPlatToolTab(const class FSpawnTabArgs& SpawnTabArgs);
 
 private:

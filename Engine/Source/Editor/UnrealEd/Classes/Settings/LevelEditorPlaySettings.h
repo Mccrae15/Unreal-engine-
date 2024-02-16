@@ -443,6 +443,12 @@ private:
 	UPROPERTY(config, EditAnywhere, Category="Multiplayer Options")
 	FLinearColor ServerDebugDrawingColorTint;
 
+	// BEGIN META SECTION - VR MultiPlayer
+	/** Whether each process is connected to one HMD or a simulator instance.  */
+	UPROPERTY(config, EditAnywhere, Category = "Multiplayer Options", meta = (EditCondition = "!RunUnderOneProcess"))
+	bool bOneHMDPerProcess;
+	// END META SECTION - VR MultiPlayer
+
 private:
 	UNREALED_API void PushDebugDrawingSettings();
 
@@ -558,6 +564,10 @@ public:
 			return FApp::GetBuildConfiguration();
 		}
 	}
+
+	// BEGIN META SECTION - VR MultiPlayer
+	bool IsOneHMDPerProcess() const { return bOneHMDPerProcess; }
+	// END META SECTION - VR MultiPlayer
 
 public:
 

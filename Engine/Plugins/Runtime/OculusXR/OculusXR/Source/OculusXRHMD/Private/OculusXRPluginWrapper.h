@@ -1,3 +1,4 @@
+// @lint-ignore-every LICENSELINT
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
@@ -288,6 +289,9 @@ struct OculusPluginWrapper
 	OCULUS_DECLARE_ENTRY_POINT(GetSpaceBoundary2D);
 	OCULUS_DECLARE_ENTRY_POINT(RequestSceneCapture);
 	OCULUS_DECLARE_ENTRY_POINT(GetSpaceTriangleMesh);
+
+
+
 
 	// Local Groups
 

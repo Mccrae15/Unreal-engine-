@@ -54,38 +54,34 @@ bool FMRUKSpec::StartPIE(bool bSimulateInEditor)
 
 void FMRUKSpec::SetupMRUKSubsystem()
 {
-	LatentBeforeEach([this](const FDoneDelegate& Done) {
+	BeforeEach([this]() {
 		// Load map and start play in editor
 		const auto ContentDir = FPaths::ProjectContentDir();
 		FAutomationEditorCommonUtils::LoadMap(ContentDir + "/Maps/TestLevel.umap");
 		StartPIE(true);
-		Done.Execute();
 	});
 
-	LatentBeforeEach(EAsyncExecution::ThreadPool, [](const FDoneDelegate& Done) {
+	BeforeEach(EAsyncExecution::ThreadPool, []() {
 		while (!GEditor->IsPlayingSessionInEditor())
 		{
 			// Wait until play session starts
 			FGenericPlatformProcess::Yield();
 		}
-		Done.Execute();
 	});
 
-	LatentBeforeEach([this](const FDoneDelegate& Done) {
+	BeforeEach([this]() {
 		// Get a reference to the subsystem
 		const auto World = GEditor->GetPIEWorldContext()->World();
 		const auto GameInstance = World->GetGameInstance();
 		ToolkitSubsystem = GameInstance->GetSubsystem<UMRUKSubsystem>();
-		Done.Execute();
 	});
 }
 
 void FMRUKSpec::LoadSceneFromJson()
 {
-	LatentBeforeEach([this](const FDoneDelegate& Done) {
+	BeforeEach([this]() {
 		// Load scene from Json
 		ToolkitSubsystem->LoadSceneFromJsonString(ExampleRoomJson);
-		Done.Execute();
 	});
 }
 
@@ -93,19 +89,17 @@ void FMRUKSpec::TeardownMRUKSubsystem()
 {
 	// Caution: Order of these statements is important
 
-	LatentAfterEach(EAsyncExecution::ThreadPool, [](const FDoneDelegate& Done) {
+	AfterEach(EAsyncExecution::ThreadPool, []() {
 		while (GEditor->IsPlayingSessionInEditor())
 		{
 			// Wait until play session ends
 			FGenericPlatformProcess::Yield();
 		}
-		Done.Execute();
 	});
 
-	LatentAfterEach([](const FDoneDelegate& Done) {
+	AfterEach([]() {
 		// Request end of play session
 		GUnrealEd->RequestEndPlayMap();
-		Done.Execute();
 	});
 }
 
@@ -127,20 +121,18 @@ void FMRUKSpec::Define()
 
 		SetupMRUKSubsystem();
 
-		LatentBeforeEach([this, &InteriorSpawner](const FDoneDelegate& Done) {
+		BeforeEach([this, &InteriorSpawner]() {
 			const auto World = GEditor->GetPIEWorldContext()->World();
 			FActorSpawnParameters Params{};
 			InteriorSpawner = World->SpawnActor<AMRUKAnchorActorSpawner>(Params);
 
 			InteriorSpawner->SpawnGroups[FMRUKLabels::Couch].Actors.Push({ AMeshActor::StaticClass() });
 			InteriorSpawner->SpawnGroups[FMRUKLabels::WindowFrame].Actors.Push({ AMeshActor::StaticClass() });
-
-			Done.Execute();
 		});
 
 		LoadSceneFromJson();
 
-		LatentIt(TEXT("Spawns interior correct"), [this](const FDoneDelegate& Done) {
+		It(TEXT("Spawns interior correct"), [this]() {
 			const auto World = GEditor->GetPIEWorldContext()->World();
 			const auto Subsystem = World->GetGameInstance()->GetSubsystem<UMRUKSubsystem>();
 
@@ -196,8 +188,6 @@ void FMRUKSpec::Define()
 			TestEqual(TEXT("Couch mesh location"), CouchMeshActor->GetActorLocation(), FVector(-145.872, 107.079, -101.393), Tolerance);
 			TestEqual(TEXT("Couch mesh rotation"), CouchMeshActor->GetActorRotation(), FRotator(0.0, -79.625847, 0.0), Tolerance);
 			TestEqual(TEXT("Couch mesh scale"), CouchMeshActor->GetActorScale(), FVector(0.902, 2.029, 0.566), Tolerance);
-
-			Done.Execute();
 		});
 
 		TeardownMRUKSubsystem();
@@ -206,18 +196,16 @@ void FMRUKSpec::Define()
 	Describe(TEXT("Serialization"), [this] {
 		SetupMRUKSubsystem();
 
-		LatentIt(TEXT("Deserializes correctly"), [this](const FDoneDelegate& Done) {
+		It(TEXT("Deserializes correctly"), [this]() {
 			ToolkitSubsystem->LoadSceneFromJsonString(ExampleRoomJson);
 			auto Rooms = ToolkitSubsystem->Rooms;
 			if (!TestEqual(TEXT("Number of rooms"), Rooms.Num(), 1))
 			{
-				Done.Execute();
 				return;
 			}
 			auto Room = Rooms[0];
 			if (!TestNotNull(TEXT("Room"), Room.Get()))
 			{
-				Done.Execute();
 				return;
 			}
 			TestEqual(TEXT("Number of anchors"), Room->AllAnchors.Num(), 23);
@@ -248,10 +236,9 @@ void FMRUKSpec::Define()
 				}
 				TestEqual(TEXT("Wall semantic classification"), Wall->SemanticClassifications[0], FMRUKLabels::WallFace);
 			}
-			Done.Execute();
 		});
 
-		LatentIt(TEXT("Serializes correctly"), [this](const FDoneDelegate& Done) {
+		It(TEXT("Serializes correctly"), [this]() {
 			ToolkitSubsystem->LoadSceneFromJsonString(ExampleRoomJson);
 			auto Serialized = ToolkitSubsystem->SaveSceneToJsonString();
 			TArray<FString> SerializedLines;
@@ -275,7 +262,6 @@ void FMRUKSpec::Define()
 					TestEqual(TEXT("JSON line"), SerializedLines[i], SourceLines[i]);
 				}
 			}
-			Done.Execute();
 		});
 
 		TeardownMRUKSubsystem();
@@ -284,18 +270,16 @@ void FMRUKSpec::Define()
 	Describe(TEXT("Room Loading"), [this]() {
 		SetupMRUKSubsystem();
 
-		LatentIt(TEXT("Load invalid string"), [this](const FDoneDelegate& Done) {
+		It(TEXT("Load invalid string"), [this]() {
 			// Load scene from invalid JSON string
 			ToolkitSubsystem->LoadSceneFromJsonString(TEXT("[[["));
 			TestEqual("Scene load status", ToolkitSubsystem->SceneLoadStatus, EMRUKInitStatus::Failed);
-			Done.Execute();
 		});
 
-		LatentIt(TEXT("Load empty room"), [this](const FDoneDelegate& Done) {
+		It(TEXT("Load empty room"), [this]() {
 			// Load scene from empty JSON string
 			ToolkitSubsystem->LoadSceneFromJsonString(TEXT(R"({"Rooms": []})"));
 			TestEqual("Scene load status", ToolkitSubsystem->SceneLoadStatus, EMRUKInitStatus::Failed);
-			Done.Execute();
 		});
 
 		TeardownMRUKSubsystem();
@@ -305,7 +289,7 @@ void FMRUKSpec::Define()
 		SetupMRUKSubsystem();
 		LoadSceneFromJson();
 
-		LatentIt(TEXT("Change nothing in room"), [this](const FDoneDelegate& Done) {
+		It(TEXT("Change nothing in room"), [this]() {
 			auto O = NewObject<URoomAndAnchorObserver>();
 
 			ToolkitSubsystem->OnRoomCreated.AddDynamic(O, &URoomAndAnchorObserver::OnRoomCreated);
@@ -329,11 +313,9 @@ void FMRUKSpec::Define()
 			TestEqual(TEXT("No anchors removed"), O->AnchorsRemoved.Num(), 0);
 
 			O->MarkAsGarbage();
-
-			Done.Execute();
 		});
 
-		LatentIt(TEXT("Add, update and remove furniture in room"), [this](const FDoneDelegate& Done) {
+		It(TEXT("Add, update and remove furniture in room"), [this]() {
 			auto O = NewObject<URoomAndAnchorObserver>();
 
 			ToolkitSubsystem->OnRoomCreated.AddDynamic(O, &URoomAndAnchorObserver::OnRoomCreated);
@@ -390,11 +372,9 @@ void FMRUKSpec::Define()
 			TestEqual(TEXT("Anchors removed"), O->AnchorsRemoved.Num(), 2);
 
 			O->MarkAsGarbage();
-
-			Done.Execute();
 		});
 
-		LatentIt(TEXT("Add and remove room"), [this](const FDoneDelegate& Done) {
+		It(TEXT("Add and remove room"), [this]() {
 			auto O = NewObject<URoomAndAnchorObserver>();
 
 			ToolkitSubsystem->OnRoomCreated.AddDynamic(O, &URoomAndAnchorObserver::OnRoomCreated);
@@ -408,8 +388,6 @@ void FMRUKSpec::Define()
 			TestEqual(TEXT("Rooms removed"), O->RoomsRemoved.Num(), 1);
 
 			O->MarkAsGarbage();
-
-			Done.Execute();
 		});
 
 		TeardownMRUKSubsystem();
@@ -419,23 +397,20 @@ void FMRUKSpec::Define()
 		SetupMRUKSubsystem();
 		LoadSceneFromJson();
 
-		LatentIt(TEXT("Is initialized"), [this](const FDoneDelegate& Done) {
+		It(TEXT("Is initialized"), [this]() {
 			TestEqual("Scene load status", ToolkitSubsystem->SceneLoadStatus, EMRUKInitStatus::Complete);
 			auto Room = ToolkitSubsystem->GetCurrentRoom();
 			if (!TestNotNull(TEXT("Current room"), Room))
 			{
-				Done.Execute();
 				return;
 			}
 			TestTrue("Room bounds valid", (bool)Room->RoomBounds.IsValid);
-			Done.Execute();
 		});
 
-		LatentIt(TEXT("Does room have"), [this](const FDoneDelegate& Done) {
+		It(TEXT("Does room have"), [this]() {
 			auto Room = ToolkitSubsystem->GetCurrentRoom();
 			if (!TestNotNull(TEXT("Current room"), Room))
 			{
-				Done.Execute();
 				return;
 			}
 
@@ -447,42 +422,36 @@ void FMRUKSpec::Define()
 
 			TArray<FString> EmptyLabels;
 			TestTrue(TEXT("Room contains empty labels"), Room->DoesRoomHave(EmptyLabels));
-			Done.Execute();
 		});
 
-		LatentIt(TEXT("Get forward facing direction"), [this](const FDoneDelegate& Done) {
+		It(TEXT("Get forward facing direction"), [this]() {
 			auto Room = ToolkitSubsystem->GetCurrentRoom();
 			if (!TestNotNull(TEXT("Current room"), Room))
 			{
-				Done.Execute();
 				return;
 			}
 
 			const auto Couch = Room->GetFirstAnchorByLabel("COUCH");
 			if (!TestNotNull(TEXT("Couch"), Room))
 			{
-				Done.Execute();
 				return;
 			}
 
 			const auto ActualFacingDirection = Couch->GetFacingDirection();
 			constexpr double Tolerance = 0.001;
 			TestEqual(TEXT("Facing direction"), ActualFacingDirection, FVector{ 0.180, -0.984, 0.000 }, Tolerance);
-			Done.Execute();
 		});
 
-		LatentIt(TEXT("Try get closest seat pose"), [this](const FDoneDelegate& Done) {
+		It(TEXT("Try get closest seat pose"), [this]() {
 			auto Room = ToolkitSubsystem->GetCurrentRoom();
 			if (!TestNotNull(TEXT("Current room"), Room))
 			{
-				Done.Execute();
 				return;
 			}
 
 			const auto Couch = Room->GetFirstAnchorByLabel("COUCH");
 			if (!TestNotNull(TEXT("Couch"), Room))
 			{
-				Done.Execute();
 				return;
 			}
 
@@ -509,7 +478,6 @@ void FMRUKSpec::Define()
 				const auto Actor = Room->TryGetClosestSeatPose(TestData.RayOrigin, TestData.RayDirection, ActualSeatTransform);
 				if (!TestNotNull(TEXT("Actor is set"), Actor))
 				{
-					Done.Execute();
 					return;
 				}
 
@@ -518,14 +486,12 @@ void FMRUKSpec::Define()
 				TestEqual(TEXT("Location is the same"), ActualSeatTransform.GetLocation(), TestData.ExpectedLocation, Tolerance);
 				TestTrue(TEXT("Rotation is the same"), ActualSeatTransform.GetRotation().Equals(TestData.ExpectedRotation, Tolerance));
 			}
-			Done.Execute();
 		});
 
-		LatentIt(TEXT("Try get closest point in room"), [this](const FDoneDelegate& Done) {
+		It(TEXT("Try get closest point in room"), [this]() {
 			auto Room = ToolkitSubsystem->GetCurrentRoom();
 			if (!TestNotNull(TEXT("Current room"), Room))
 			{
-				Done.Execute();
 				return;
 			}
 
@@ -579,14 +545,12 @@ void FMRUKSpec::Define()
 					TestEqual(TEXT("Surface location"), ActualSurfaceLocation, TestData.ExpectedSurfaceLocation.GetValue(), Tolerance);
 				}
 			}
-			Done.Execute();
 		});
 
-		LatentIt(TEXT("Get best pose from raycast"), [this](const FDoneDelegate& Done) {
+		It(TEXT("Get best pose from raycast"), [this]() {
 			auto Room = ToolkitSubsystem->GetCurrentRoom();
 			if (!TestNotNull(TEXT("Current room"), Room))
 			{
-				Done.Execute();
 				return;
 			}
 
@@ -661,7 +625,6 @@ void FMRUKSpec::Define()
 				{
 					if (!TestNotNull(TEXT("Actor is set"), Actor))
 					{
-						Done.Execute();
 						return;
 					}
 					constexpr double Tolerance = 0.15;
@@ -670,39 +633,33 @@ void FMRUKSpec::Define()
 					TestTrue(TEXT("Rotation is the same"), ActualOutPose.GetRotation().Equals(TestData.ExpectedRotation, Tolerance));
 				}
 			}
-			Done.Execute();
 		});
 
-		LatentIt(TEXT("Get key wall"), [this](const FDoneDelegate& Done) {
+		It(TEXT("Get key wall"), [this]() {
 			auto Room = ToolkitSubsystem->GetCurrentRoom();
 			if (!TestNotNull(TEXT("Current room"), Room))
 			{
-				Done.Execute();
 				return;
 			}
 
 			const auto KeyWallAnchor = Room->GetKeyWall();
 			if (!TestNotNull(TEXT("Key wall anchor is not null"), KeyWallAnchor))
 			{
-				Done.Execute();
 				return;
 			}
 			TestEqual(TEXT("Key wall anchor UUID is correct"), KeyWallAnchor->SpaceQueryResult.UUID, FOculusXRUUID({ 0x93, 0x4C, 0xE7, 0x5D, 0x63, 0xF0, 0x85, 0x6A, 0x94, 0x38, 0xDA, 0xB3, 0xAD, 0xA9, 0x54, 0x09 }));
-			Done.Execute();
 		});
 
-		LatentIt(TEXT("Get largest surface"), [this](const FDoneDelegate& Done) {
+		It(TEXT("Get largest surface"), [this]() {
 			auto Room = ToolkitSubsystem->GetCurrentRoom();
 			if (!TestNotNull(TEXT("Current room"), Room))
 			{
-				Done.Execute();
 				return;
 			}
 
 			auto Anchor = Room->GetLargestSurface(FMRUKLabels::WallArt);
 			if (!TestNotNull(TEXT("Anchor is not null"), Anchor))
 			{
-				Done.Execute();
 				return;
 			}
 			TestEqual(TEXT("Anchor UUID is correct"), Anchor->SpaceQueryResult.UUID, FOculusXRUUID({ 0xDE, 0x8D, 0xDD, 0xD9, 0x90, 0xAD, 0x5F, 0xCB, 0x8E, 0x7E, 0x23, 0x7E, 0x93, 0x8C, 0xB0, 0xD3 }));
@@ -710,19 +667,15 @@ void FMRUKSpec::Define()
 			Anchor = Room->GetLargestSurface(FMRUKLabels::Screen);
 			if (!TestNotNull(TEXT("Anchor is not null"), Anchor))
 			{
-				Done.Execute();
 				return;
 			}
 			TestEqual(TEXT("Anchor UUID is correct"), Anchor->SpaceQueryResult.UUID, FOculusXRUUID({ 0x4F, 0x3D, 0x50, 0x69, 0x41, 0xFC, 0xDF, 0x2C, 0xDE, 0x52, 0x9B, 0x77, 0x8F, 0x7E, 0x2C, 0xA0 }));
-
-			Done.Execute();
 		});
 
-		LatentIt(TEXT("Point inside room"), [this](const FDoneDelegate& Done) {
+		It(TEXT("Point inside room"), [this]() {
 			auto Room = ToolkitSubsystem->GetCurrentRoom();
 			if (!TestNotNull(TEXT("Current room"), Room))
 			{
-				Done.Execute();
 				return;
 			}
 			TArray<FVector> PointsInRoom = {
@@ -837,14 +790,12 @@ void FMRUKSpec::Define()
 			{
 				TestFalse("Point outside room", Room->IsPositionInRoom(Point, true));
 			}
-			Done.Execute();
 		});
 
-		LatentIt(TEXT("Generate random position in room"), [this](const FDoneDelegate& Done) {
+		It(TEXT("Generate random position in room"), [this]() {
 			auto Room = ToolkitSubsystem->GetCurrentRoom();
 			if (!TestNotNull(TEXT("Current room"), Room))
 			{
-				Done.Execute();
 				return;
 			}
 			// Generate 100 random positions in the room and verify that they are all indeed inside the room and not in scene volumes
@@ -875,15 +826,12 @@ void FMRUKSpec::Define()
 			constexpr float LargeMinDistance = 300.0f;
 			FVector Position;
 			TestFalse(TEXT("No valid positions"), Room->GenerateRandomPositionInRoomFromStream(Position, RandomStream, LargeMinDistance));
-
-			Done.Execute();
 		});
 
-		LatentIt(TEXT("Ray cast"), [this](const FDoneDelegate& Done) {
+		It(TEXT("Ray cast"), [this]() {
 			auto Room = ToolkitSubsystem->GetCurrentRoom();
 			if (!TestNotNull(TEXT("Current room"), Room))
 			{
-				Done.Execute();
 				return;
 			}
 			struct FRecordedRaycast
@@ -941,14 +889,12 @@ void FMRUKSpec::Define()
 					}
 				}
 			}
-			Done.Execute();
 		});
 
-		LatentIt(TEXT("Ray cast all"), [this](const FDoneDelegate& Done) {
+		It(TEXT("Ray cast all"), [this]() {
 			auto Room = ToolkitSubsystem->GetCurrentRoom();
 			if (!TestNotNull(TEXT("Current room"), Room))
 			{
-				Done.Execute();
 				return;
 			}
 			struct FRecordedRaycastHit
@@ -1004,14 +950,12 @@ void FMRUKSpec::Define()
 					}
 				}
 			}
-			Done.Execute();
 		});
 
-		LatentIt(TEXT("Parent/child relationship"), [this](const FDoneDelegate& Done) {
+		It(TEXT("Parent/child relationship"), [this]() {
 			auto Room = ToolkitSubsystem->GetCurrentRoom();
 			if (!TestNotNull(TEXT("Current room"), Room))
 			{
-				Done.Execute();
 				return;
 			}
 			// Verify that child/parent relationship is consistent
@@ -1068,10 +1012,9 @@ void FMRUKSpec::Define()
 					TestTrue(TEXT("Wall art is on wall"), Room->WallAnchors.Contains(Anchor->ParentAnchor));
 				}
 			}
-			Done.Execute();
 		});
 
-		LatentIt(TEXT("Anchor mesh"), [this](const FDoneDelegate& Done) {
+		It(TEXT("Anchor mesh"), [this]() {
 			auto Room = ToolkitSubsystem->GetCurrentRoom();
 			const auto& AnchorMesh = Room->AnchorMesh;
 			AnchorMesh.Triangles.Num();
@@ -1084,7 +1027,6 @@ void FMRUKSpec::Define()
 			TestEqual(TEXT("Triangle P3"), Triangle.P3, 7);
 			constexpr double Tolerance = 0.001;
 			TestEqual(TEXT("Barycentric"), OutBarycentric, FVector(0.178, 0.329, 0.492), Tolerance);
-			Done.Execute();
 		});
 
 		TeardownMRUKSubsystem();
@@ -1094,7 +1036,7 @@ void FMRUKSpec::Define()
 		SetupMRUKSubsystem();
 		LoadSceneFromJson();
 
-		LatentIt(TEXT("IsPositionInSceneVolume"), [this](const FDoneDelegate& Done) {
+		It(TEXT("IsPositionInSceneVolume"), [this]() {
 			struct TestData
 			{
 				FVector WorldPosition;
@@ -1135,8 +1077,6 @@ void FMRUKSpec::Define()
 					TestNull(TEXT("Actual actor not set"), ActualActor);
 				}
 			}
-
-			Done.Execute();
 		});
 
 		TeardownMRUKSubsystem();
@@ -1146,17 +1086,15 @@ void FMRUKSpec::Define()
 		SetupMRUKSubsystem();
 		LoadSceneFromJson();
 
-		LatentIt(TEXT("HasLabel"), [this](const FDoneDelegate& Done) {
+		It(TEXT("HasLabel"), [this]() {
 			const auto Room = ToolkitSubsystem->GetCurrentRoom();
 			if (!TestNotNull(TEXT("Current room"), Room))
 			{
-				Done.Execute();
 				return;
 			}
 
 			if (!TestTrue(TEXT("Wall anchors available"), Room->WallAnchors.Num() > 0))
 			{
-				Done.Execute();
 				return;
 			}
 			for (const auto& WallAnchor : Room->WallAnchors)
@@ -1168,7 +1106,6 @@ void FMRUKSpec::Define()
 
 			if (!TestNotNull(TEXT("Floor anchor"), Room->FloorAnchor.Get()))
 			{
-				Done.Execute();
 				return;
 			}
 			TestTrue(TEXT("Has FLOOR label"), Room->FloorAnchor->HasLabel(FMRUKLabels::Floor));
@@ -1177,40 +1114,33 @@ void FMRUKSpec::Define()
 
 			if (!TestNotNull(TEXT("Ceiling anchor"), Room->CeilingAnchor.Get()))
 			{
-				Done.Execute();
 				return;
 			}
 			TestTrue(TEXT("Has CEILING label"), Room->CeilingAnchor->HasLabel(FMRUKLabels::Ceiling));
 			TestFalse(TEXT("Has not FLOOR label"), Room->CeilingAnchor->HasLabel(FMRUKLabels::Floor));
 			TestFalse(TEXT("Has not WALL_FACE label"), Room->CeilingAnchor->HasLabel(FMRUKLabels::WallFace));
-
-			Done.Execute();
 		});
 
-		LatentIt(TEXT("ProceduralMesh"), [this](const FDoneDelegate& Done) {
+		It(TEXT("ProceduralMesh"), [this]() {
 			const auto Room = ToolkitSubsystem->GetCurrentRoom();
 			if (!TestNotNull(TEXT("Current room"), Room))
 			{
-				Done.Execute();
 				return;
 			}
 
 			if (!TestNotNull(TEXT("Floor anchor"), Room->FloorAnchor.Get()))
 			{
-				Done.Execute();
 				return;
 			}
 			Room->FloorAnchor->AttachProceduralMesh();
 			auto ProceduralMeshComponent = Room->FloorAnchor->ProceduralMeshComponent;
 			if (!TestNotNull(TEXT("Has Procedural Mesh Component"), ProceduralMeshComponent.Get()))
 			{
-				Done.Execute();
 				return;
 			}
 			auto Section = ProceduralMeshComponent->GetProcMeshSection(0);
 			if (!TestNotNull(TEXT("Mesh Section"), Section))
 			{
-				Done.Execute();
 				return;
 			}
 			TestEqual(TEXT("Floor vertices equal to number of walls"), Section->ProcVertexBuffer.Num(), Room->WallAnchors.Num());
@@ -1240,13 +1170,11 @@ void FMRUKSpec::Define()
 				ProceduralMeshComponent = Room->WallAnchors[0]->ProceduralMeshComponent;
 				if (!TestNotNull(TEXT("Has Procedural Mesh Component"), ProceduralMeshComponent.Get()))
 				{
-					Done.Execute();
 					return;
 				}
 				Section = ProceduralMeshComponent->GetProcMeshSection(0);
 				if (!TestNotNull(TEXT("Mesh Section"), Section))
 				{
-					Done.Execute();
 					return;
 				}
 				if (TestEqual(TEXT("Vertex buffer size"), Section->ProcVertexBuffer.Num(), 4))
@@ -1269,8 +1197,6 @@ void FMRUKSpec::Define()
 					TestEqual(TEXT("Vertex 3 UV 3"), Section->ProcVertexBuffer[3].UV3, FVector2D(10.790611, -0.000000));
 				}
 			}
-
-			Done.Execute();
 		});
 
 		TeardownMRUKSubsystem();

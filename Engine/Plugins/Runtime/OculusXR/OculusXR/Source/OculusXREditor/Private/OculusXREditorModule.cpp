@@ -1,19 +1,14 @@
-/*
-Copyright (c) Meta Platforms, Inc. and affiliates.
-All rights reserved.
-This source code is licensed under the license found in the
-LICENSE file in the root directory of this source tree.
-*/
+// Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include "OculusXREditorModule.h"
 
 #include "AssetToolsModule.h"
 #include "OculusXRToolStyle.h"
 #include "OculusXRToolCommands.h"
-#include "OculusXRToolWidget.h"
 #include "OculusXRPlatformToolWidget.h"
 #include "OculusXRAssetDirectory.h"
 #include "OculusXRHMDRuntimeSettings.h"
+#include "IOculusXRProjectSetupModule.h"
 #include "OculusXRHMDTypes.h"
 #include "LevelEditor.h"
 #include "Modules/ModuleManager.h"
@@ -38,7 +33,6 @@ LICENSE file in the root directory of this source tree.
 
 #define LOCTEXT_NAMESPACE "OculusXREditor"
 
-const FName FOculusXREditorModule::OculusPerfTabName = FName("OculusXRPerfCheck");
 const FName FOculusXREditorModule::OculusPlatToolTabName = FName("OculusXRPlaformTool");
 
 void FOculusXREditorModule::PostLoadCallback()
@@ -62,8 +56,8 @@ void FOculusXREditorModule::StartupModule()
 		PluginCommands = MakeShareable(new FUICommandList);
 
 		PluginCommands->MapAction(
-			FOculusToolCommands::Get().OpenPluginWindow,
-			FExecuteAction::CreateRaw(this, &FOculusXREditorModule::PluginOpenPerfWindow),
+			FOculusToolCommands::Get().OpenProjectSetupTool,
+			FExecuteAction::CreateRaw(this, &FOculusXREditorModule::PluginOpenSetupToolWindow),
 			FCanExecuteAction());
 		PluginCommands->MapAction(
 			FOculusToolCommands::Get().OpenPlatWindow,
@@ -74,6 +68,8 @@ void FOculusXREditorModule::StartupModule()
 			FExecuteAction::CreateLambda([=]() {
 				UOculusXRHMDRuntimeSettings* settings = GetMutableDefault<UOculusXRHMDRuntimeSettings>();
 				settings->bDeploySoToDevice = !settings->bDeploySoToDevice;
+				settings->Modify(true);
+				settings->UpdateSinglePropertyInConfigFile(settings->GetClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(UOculusXRHMDRuntimeSettings, bDeploySoToDevice)), settings->GetDefaultConfigFilename());
 			}),
 			FCanExecuteAction(),
 			FIsActionChecked::CreateLambda([=]() {
@@ -115,8 +111,6 @@ void FOculusXREditorModule::StartupModule()
 		ToolbarExtender->AddToolBarExtension("Play", EExtensionHook::After, PluginCommands, FToolBarExtensionDelegate::CreateRaw(this, &FOculusXREditorModule::AddToolbarExtension));
 		LevelEditorModule.GetToolBarExtensibilityManager()->AddExtender(ToolbarExtender);
 
-		FGlobalTabmanager::Get()->RegisterNomadTabSpawner(OculusPerfTabName, FOnSpawnTab::CreateRaw(this, &FOculusXREditorModule::OnSpawnPluginTab)).SetDisplayName(LOCTEXT("FOculusXREditorTabTitle", "Meta XR Performance Check")).SetMenuType(ETabSpawnerMenuType::Hidden);
-
 		FGlobalTabmanager::Get()->RegisterNomadTabSpawner(OculusPlatToolTabName, FOnSpawnTab::CreateRaw(this, &FOculusXREditorModule::OnSpawnPlatToolTab)).SetDisplayName(LOCTEXT("FOculusPlatfToolTabTitle", "Meta XR Platform Tool")).SetMenuType(ETabSpawnerMenuType::Hidden);
 
 		// Register asset types
@@ -142,7 +136,6 @@ void FOculusXREditorModule::ShutdownModule()
 	{
 		FOculusToolStyle::Shutdown();
 		FOculusToolCommands::Unregister();
-		FGlobalTabmanager::Get()->UnregisterNomadTabSpawner(OculusPerfTabName);
 		FGlobalTabmanager::Get()->UnregisterNomadTabSpawner(OculusPlatToolTabName);
 	}
 
@@ -151,19 +144,6 @@ void FOculusXREditorModule::ShutdownModule()
 	{
 		UnregisterSettings();
 	}
-}
-
-TSharedRef<SDockTab> FOculusXREditorModule::OnSpawnPluginTab(const FSpawnTabArgs& SpawnTabArgs)
-{
-	/* clang-format off */
-	auto myTab = SNew(SDockTab)
-	.TabRole(ETabRole::NomadTab)
-	[
-		SNew(SOculusToolWidget)
-	];
-	/* clang-format on */
-
-	return myTab;
 }
 
 TSharedRef<SDockTab> FOculusXREditorModule::OnSpawnPlatToolTab(const FSpawnTabArgs& SpawnTabArgs)
@@ -210,13 +190,13 @@ void FOculusXREditorModule::UnregisterSettings()
 
 FReply FOculusXREditorModule::PluginClickFn(bool text)
 {
-	PluginOpenPerfWindow();
+	PluginOpenSetupToolWindow();
 	return FReply::Handled();
 }
 
-void FOculusXREditorModule::PluginOpenPerfWindow()
+void FOculusXREditorModule::PluginOpenSetupToolWindow()
 {
-	FGlobalTabmanager::Get()->TryInvokeTab(OculusPerfTabName);
+	IOculusXRProjectSetupToolModule::Get().ShowProjectSetupTool("Meta Menu");
 }
 
 void FOculusXREditorModule::PluginOpenPlatWindow()
@@ -255,7 +235,7 @@ void FOculusXREditorModule::AddMenuExtension(FMenuBuilder& Builder)
 	GConfig->GetBool(TEXT("/Script/OculusXREditor.OculusXREditorSettings"), TEXT("bAddMenuOption"), v, GEditorIni);
 	if (v)
 	{
-		Builder.AddMenuEntry(FOculusToolCommands::Get().OpenPluginWindow);
+		Builder.AddMenuEntry(FOculusToolCommands::Get().OpenProjectSetupTool);
 	}
 }
 
@@ -292,7 +272,7 @@ TSharedRef<SWidget> FOculusXREditorModule::CreateToolbarEntryMenu(TSharedPtr<cla
 	MenuBuilder.EndSection();
 
 	MenuBuilder.BeginSection("OculusXRTools", LOCTEXT("OculusXRTools", "Tools"));
-	MenuBuilder.AddMenuEntry(FOculusToolCommands::Get().OpenPluginWindow);
+	MenuBuilder.AddMenuEntry(FOculusToolCommands::Get().OpenProjectSetupTool);
 	MenuBuilder.AddMenuEntry(FOculusToolCommands::Get().OpenPlatWindow);
 	MenuBuilder.EndSection();
 
@@ -334,7 +314,7 @@ TSharedRef<IDetailCustomization> FOculusXRHMDSettingsDetailsCustomization::MakeI
 
 FReply FOculusXRHMDSettingsDetailsCustomization::PluginClickPerfFn(bool text)
 {
-	FGlobalTabmanager::Get()->TryInvokeTab(FOculusXREditorModule::OculusPerfTabName);
+	IOculusXRProjectSetupToolModule::Get().ShowProjectSetupTool("Settings");
 	return FReply::Handled();
 }
 
@@ -368,7 +348,7 @@ void FOculusXRHMDSettingsDetailsCustomization::CustomizeDetails(IDetailLayoutBui
 			+ SHorizontalBox::Slot().AutoWidth()
 			[
 				SNew(SButton)
-				.Text(LOCTEXT("LaunchTool", "Launch Meta XR Performance Window"))
+				.Text(LOCTEXT("LaunchTool", "Launch Meta XR Project Setup Tool"))
 				.OnClicked(this, &FOculusXRHMDSettingsDetailsCustomization::PluginClickPerfFn, true)
 			]
 			+ SHorizontalBox::Slot().FillWidth(8)

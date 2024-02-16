@@ -25,7 +25,7 @@ public:
 
 	/**
 	 * Attaches the procedural mesh component to this actor.
-	 * @Param GuardianMesh The mesh to attach.
+	 * @param GuardianMesh The mesh to attach.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "MR Utility Kit")
 	void CreateGuardian(UProceduralMeshComponent* GuardianMesh);

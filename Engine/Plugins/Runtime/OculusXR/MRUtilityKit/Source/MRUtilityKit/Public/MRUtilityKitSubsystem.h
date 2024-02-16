@@ -89,11 +89,12 @@ public:
 
 	/**
 	 * Cast a ray and return the closest hit anchor in the scene.
-	 * @Param Origin    Origin The origin of the ray.
-	 * @Param Direction Direction The direction of the ray.
-	 * @Param MaxDist   The maximum distance the ray should travel.
-	 * @Param OutHit    The closest hit.
-	 * @Return          The anchor that the ray hit
+	 * @param Origin      Origin The origin of the ray.
+	 * @param Direction   Direction The direction of the ray.
+	 * @param MaxDist     The maximum distance the ray should travel.
+	 * @param LabelFilter The label filter can be used to include/exclude certain labels from the search.
+	 * @param OutHit      The closest hit.
+	 * @return            The anchor that the ray hit
 	 */
 	UFUNCTION(BlueprintCallable, Category = "MR Utility Kit", meta = (AutoCreateRefTerm = "LabelFilter"))
 	AMRUKAnchor* Raycast(const FVector& Origin, const FVector& Direction, float MaxDist, const FMRUKLabelFilter& LabelFilter, FMRUKHit& OutHit);
@@ -101,12 +102,13 @@ public:
 	/**
 	 * Cast a ray and collect hits against the volumes and plane bounds in every room in the scene.
      * The order of the hits in the array is not specified.
-	 * @Param Origin     Origin The origin of the ray.
-	 * @Param Direction  Direction The direction of the ray.
-	 * @Param MaxDist    The maximum distance the ray should travel.
-	 * @Param OutHits    The hits the ray collected.
-	 * @Param OutAnchors The anchors that were hit. Each anchor in this array corresponds to a entry at the same position in OutHits.
-	 * @Return           Whether the ray hit anything
+	 * @param Origin      Origin The origin of the ray.
+	 * @param Direction   Direction The direction of the ray.
+	 * @param MaxDist     The maximum distance the ray should travel.
+	 * @param LabelFilter The label filter can be used to include/exclude certain labels from the search.
+	 * @param OutHits     The hits the ray collected.
+	 * @param OutAnchors  The anchors that were hit. Each anchor in this array corresponds to a entry at the same position in OutHits.
+	 * @return            Whether the ray hit anything
 	 */
 	UFUNCTION(BlueprintCallable, Category = "MR Utility Kit", meta = (AutoCreateRefTerm = "LabelFilter"))
 	bool RaycastAll(const FVector& Origin, const FVector& Direction, float MaxDist, const FMRUKLabelFilter& LabelFilter, TArray<FMRUKHit>& OutHits, TArray<AMRUKAnchor*>& OutAnchors);
@@ -120,7 +122,7 @@ public:
 	/**
 	 * Save all rooms and anchors to JSON. This JSON representation can than later be used by
 	 * LoadSceneFromJsonString() to load the scene again.
-	 * @Return the JSON string.
+	 * @return the JSON string.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "MR Utility Kit")
 	FString SaveSceneToJsonString();
@@ -157,11 +159,12 @@ public:
 	AMRUKAnchor* TryGetClosestSurfacePosition(const FVector& WorldPosition, FVector& OutSurfacePosition, const FMRUKLabelFilter& LabelFilter, double MaxDistance = 0.0);
 
 	/**
-	 *	Checks if the given position is on or inside of any scene volume in the rooms.
-	 *  All rooms will be checked and the first anchors scene volume that has the point on or inside it will be returned.
-	 *	@param WorldPosition      The position in world space to check
-	 *	@param TestVerticalBounds Whether the vertical bounds should be checked or not
-	 *	@return					  The anchor the WorldPosition is in. A null pointer otherwise.
+	 * Checks if the given position is on or inside of any scene volume in the rooms.
+	 * All rooms will be checked and the first anchors scene volume that has the point on or inside it will be returned.
+	 * @param WorldPosition      The position in world space to check
+	 * @param TestVerticalBounds Whether the vertical bounds should be checked or not
+	 * @param Tolerance          Tolerance
+	 * @return					 The anchor the WorldPosition is in. A null pointer otherwise.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "MR Utility Kit")
 	AMRUKAnchor* IsPositionInSceneVolume(const FVector& WorldPosition, bool TestVerticalBounds = true, double Tolerance = 0.0);
@@ -170,25 +173,30 @@ public:
 	 * Spawn meshes on the position of the anchors of each room.
 	 * The actors should have Z as up Y as right and X as forward.
 	 * The pivot point should be in the bottom center.
-	 * @Param ActorClasses A map wich tells to spawn which actor to a given label.
-	 * @Param RandomStream A random generator to choose randomly between actor classes if there a multiple for one label.
+	 * @param SpawnGroups                A map wich tells to spawn which actor to a given label.
+	 * @param ProceduralMaterial         Material to apply on top of the procedural mesh if any.
+	 * @param ShouldFallbackToProcedural Whether or not it should by default fallback to generating a procedural mesh if no actor class has been specified for a label.
+	 * @return                           The spawned actors.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "MR Utility Kit")
-	TArray<AActor*> SpawnInterior(const TMap<FString, FMRUKSpawnGroup>& SpawnGroups, UMaterialInterface* ProceduralMaterial = nullptr);
+	TArray<AActor*> SpawnInterior(const TMap<FString, FMRUKSpawnGroup>& SpawnGroups, UMaterialInterface* ProceduralMaterial = nullptr, bool ShouldFallbackToProcedural = true);
 
 	/**
 	 * Spawn meshes on the position of the anchors of each room from a random stream.
 	 * The actors should have Z as up Y as right and X as forward.
 	 * The pivot point should be in the bottom center.
-	 * @Param ActorClasses A map wich tells to spawn which actor to a given label.
-	 * @Param RandomStream A random generator to choose randomly between actor classes if there a multiple for one label.
+	 * @param SpawnGroups                A map wich tells to spawn which actor to a given label.
+	 * @param RandomStream               A random generator to choose randomly between actor classes if there a multiple for one label.
+	 * @param ProceduralMaterial         Material to apply on top of the procedural mesh if any.
+	 * @param ShouldFallbackToProcedural Whether or not it should by default fallback to generating a procedural mesh if no actor class has been specified for a label.
+	 * @return                           The spawned actors.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "MR Utility Kit")
-	TArray<AActor*> SpawnInteriorFromStream(const TMap<FString, FMRUKSpawnGroup>& SpawnGroups, const FRandomStream& RandomStream, UMaterialInterface* ProceduralMaterial = nullptr);
+	TArray<AActor*> SpawnInteriorFromStream(const TMap<FString, FMRUKSpawnGroup>& SpawnGroups, const FRandomStream& RandomStream, UMaterialInterface* ProceduralMaterial = nullptr, bool ShouldFallbackToProcedural = true);
 
 	/**
 	 * Launch the scene capture. After a successful capture the scene should be updated.
-	 * @Return Whether the capture was successful.
+	 * @return Whether the capture was successful.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "MR Utility Kit")
 	bool LaunchSceneCapture();

@@ -831,13 +831,6 @@ float4 GetScreenPosition(FMaterialPixelParameters Parameters)
 	return Parameters.ScreenPosition;
 }
 
-// BEGIN META SECTION - XR Soft Occlusions
-uint GetViewId(FMaterialPixelParameters Parameters)
-{
-	return Parameters.ViewId;
-}
-// END META SECTION - XR Soft Occlusions
-
 // Returns the pixel's depth, in world units. Works for both orthographic and perspective projections:
 float GetPixelDepth(FMaterialVertexParameters Parameters)
 {
@@ -2917,6 +2910,18 @@ half GetMaterialAnisotropy(FPixelMaterialInputs PixelMaterialInputs)
 {
 	return clamp(GetMaterialAnisotropyRaw(PixelMaterialInputs), -1.0f, 1.0f);
 }
+
+// BEGIN META SECTION - XR Soft Occlusions
+uint GetViewId(FMaterialPixelParameters Parameters)
+{
+	return Parameters.ViewId;
+}
+
+half GetMaterialXRSoftOcclusionsDepthBias()
+{
+%s;
+}
+// END META SECTION - XR Soft Occlusions
 
 half GetMaterialTranslucencyDirectionalLightingIntensity()
 {

@@ -1,3 +1,4 @@
+// @lint-ignore-every LICENSELINT
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "OculusXRSceneActor.h"
@@ -7,6 +8,7 @@
 #include "OculusXRAnchorManager.h"
 #include "OculusXRAnchorTypes.h"
 #include "OculusXRAnchorBPFunctionLibrary.h"
+#include "OculusXRSceneDelegates.h"
 #include "OculusXRDelegates.h"
 #include "Components/StaticMeshComponent.h"
 #include "Engine/AssetManager.h"
@@ -99,6 +101,7 @@ void AOculusXRSceneActor::BeginPlay()
 	{
 		PopulateScene();
 	}
+
 }
 
 void AOculusXRSceneActor::EndPlay(EEndPlayReason::Type Reason)
@@ -108,6 +111,7 @@ void AOculusXRSceneActor::EndPlay(EEndPlayReason::Type Reason)
 
 	// Calling ResetStates will reset member variables to their default values (including the request IDs).
 	ResetStates();
+
 
 	Super::EndPlay(Reason);
 }
@@ -267,6 +271,7 @@ AActor* AOculusXRSceneActor::SpawnOrUpdateSceneAnchor(AActor* Anchor, const FOcu
 	return Anchor;
 }
 
+
 bool AOculusXRSceneActor::IsScenePopulated()
 {
 	if (!RootComponent)
@@ -407,6 +412,13 @@ TArray<AActor*> AOculusXRSceneActor::GetActorsBySemanticLabel(const FString Sema
 	return actors;
 }
 
+TArray<FOculusXRRoomLayout> AOculusXRSceneActor::GetRoomLayouts() const
+{
+	TArray<FOculusXRRoomLayout> layouts;
+	RoomLayouts.GenerateValueArray(layouts);
+	return layouts;
+}
+
 EOculusXRAnchorResult::Type AOculusXRSceneActor::QueryAllRooms()
 {
 	FOculusXRSpaceQueryInfo queryInfo;
@@ -438,6 +450,10 @@ void AOculusXRSceneActor::RoomLayoutQueryComplete(EOculusXRAnchorResult::Type An
 			continue;
 		}
 
+		roomLayout.RoomAnchorHandle = QueryElement.Space;
+		roomLayout.RoomUuid = QueryElement.UUID;
+
+
 		// If we're only loading the active room we start that floor check query here, otherwise do the room query
 		if (bActiveRoomOnly)
 		{
@@ -452,14 +468,14 @@ void AOculusXRSceneActor::RoomLayoutQueryComplete(EOculusXRAnchorResult::Type An
 
 EOculusXRAnchorResult::Type AOculusXRSceneActor::QueryRoomUUIDs(const FOculusXRUInt64 RoomSpaceID, const TArray<FOculusXRUUID>& RoomUUIDs)
 {
-	EOculusXRAnchorResult::Type anchorQueryResult;
+	EOculusXRAnchorResult::Type startAnchorQueryResult;
 	OculusXRAnchors::FOculusXRAnchors::QueryAnchors(
 		RoomUUIDs,
 		EOculusXRSpaceStorageLocation::Local,
 		FOculusXRAnchorQueryDelegate::CreateUObject(this, &AOculusXRSceneActor::SceneRoomQueryComplete, RoomSpaceID),
-		anchorQueryResult);
+		startAnchorQueryResult);
 
-	return anchorQueryResult;
+	return startAnchorQueryResult;
 }
 
 void AOculusXRSceneActor::SceneRoomQueryComplete(EOculusXRAnchorResult::Type AnchorResult, const TArray<FOculusXRSpaceQueryResult>& QueryResults, const FOculusXRUInt64 RoomSpaceID)
@@ -470,7 +486,6 @@ void AOculusXRSceneActor::SceneRoomQueryComplete(EOculusXRAnchorResult::Type Anc
 	}
 
 	bool bOutPending = false;
-
 	for (auto& AnchorQueryElement : QueryResults)
 	{
 		if (SceneGlobalMeshComponent)
@@ -574,8 +589,8 @@ void AOculusXRSceneActor::SceneRoomQueryComplete(EOculusXRAnchorResult::Type Anc
 
 void AOculusXRSceneActor::StartSingleRoomQuery(FOculusXRUInt64 RoomSpaceID, FOculusXRRoomLayout RoomLayout)
 {
-	EOculusXRAnchorResult::Type queryResult = QueryRoomUUIDs(RoomSpaceID, RoomLayout.RoomObjectUUIDs);
-	if (UOculusXRAnchorBPFunctionLibrary::IsAnchorResultSuccess(queryResult))
+	EOculusXRAnchorResult::Type startQueryResult = QueryRoomUUIDs(RoomSpaceID, RoomLayout.RoomObjectUUIDs);
+	if (UOculusXRAnchorBPFunctionLibrary::IsAnchorResultSuccess(startQueryResult))
 	{
 		RoomLayouts.Add(RoomSpaceID, std::move(RoomLayout));
 	}

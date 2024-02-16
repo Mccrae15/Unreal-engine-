@@ -1,10 +1,5 @@
-/*
-Copyright (c) Meta Platforms, Inc. and affiliates.
-All rights reserved.
+// Copyright (c) Meta Platforms, Inc. and affiliates.
 
-This source code is licensed under the license found in the
-LICENSE file in the root directory of this source tree.
-*/
 #pragma once
 
 #include "CoreMinimal.h"
@@ -12,7 +7,7 @@ LICENSE file in the root directory of this source tree.
 #include "Engine/ImportantToggleSettingInterface.h"
 #include "OculusXRTelemetryPrivacySettings.generated.h"
 
-UCLASS(MinimalAPI, hidecategories = Object, config = EditorPerProjectUserSettings)
+UCLASS(MinimalAPI, hidecategories = Object, config = EditorSettings)
 class UOculusXRTelemetryPrivacySettings : public UObject, public IImportantToggleSettingInterface
 {
 	GENERATED_UCLASS_BODY()

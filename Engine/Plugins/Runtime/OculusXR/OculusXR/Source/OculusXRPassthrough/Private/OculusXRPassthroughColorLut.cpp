@@ -1,3 +1,5 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+
 #include "OculusXRPassthroughColorLut.h"
 #include "OculusXRPassthroughLayerComponent.h"
 #include "OculusXRHMDPrivate.h"

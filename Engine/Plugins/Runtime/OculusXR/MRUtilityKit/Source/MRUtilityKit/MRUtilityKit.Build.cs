@@ -18,6 +18,8 @@ public class MRUtilityKit : ModuleRules
 			new string[]
 			{
 				"Core",
+				"RenderCore",
+				"Projects"
 			});
 
 

@@ -1,3 +1,4 @@
+// @lint-ignore-every LICENSELINT
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "OculusXRPluginWrapper.h"
@@ -283,7 +284,9 @@ bool OculusPluginWrapper::InitializeOculusPluginWrapper(OculusPluginWrapper* wra
 		OCULUS_BIND_ENTRY_POINT(RequestSceneCapture),
 		OCULUS_BIND_ENTRY_POINT(GetSpaceTriangleMesh),
 
-	// Local Groups
+
+
+
 
 		// MovementSDK
 		OCULUS_BIND_ENTRY_POINT(GetBodyTrackingEnabled),

@@ -2,6 +2,7 @@
 
 #include "PCGGraph.h"
 
+#include "PCGCommon.h"
 #include "PCGComponent.h"
 #include "PCGEdge.h"
 #include "PCGInputOutputSettings.h"
@@ -1221,7 +1222,7 @@ void UPCGGraphInstance::PreEditChange(FProperty* InProperty)
 		return;
 	}
 
-	if (InProperty->GetFName() == GET_MEMBER_NAME_CHECKED(UPCGGraphInstance, Graph) && Graph)
+	if (InProperty->GetFName() == GET_MEMBER_NAME_CHECKED(UPCGGraphInstance, Graph))
 	{
 		TeardownCallbacks();
 	}
@@ -1236,7 +1237,7 @@ void UPCGGraphInstance::PostEditChangeProperty(FPropertyChangedEvent& PropertyCh
 		return;
 	}
 
-	if (PropertyChangedEvent.GetPropertyName() == GET_MEMBER_NAME_CHECKED(UPCGGraphInstance, Graph) && Graph)
+	if (PropertyChangedEvent.GetPropertyName() == GET_MEMBER_NAME_CHECKED(UPCGGraphInstance, Graph))
 	{
 		SetupCallbacks();
 
@@ -1481,7 +1482,7 @@ void UPCGGraphInstance::ResetPropertyToDefault(const FProperty* InProperty)
 
 bool UPCGGraphInstance::IsPropertyOverriddenAndNotDefault(const FProperty* InProperty) const
 {
-	return ParametersOverrides.IsPropertyOverriddenAndNotDefault(InProperty, Graph->GetUserParametersStruct());
+	return Graph ? ParametersOverrides.IsPropertyOverriddenAndNotDefault(InProperty, Graph->GetUserParametersStruct()) : false;
 }
 
 bool FPCGOverrideInstancedPropertyBag::RefreshParameters(const FInstancedPropertyBag* ParentUserParameters, EPCGGraphParameterEvent InChangeType, FName InChangedPropertyName)
@@ -1500,14 +1501,15 @@ bool FPCGOverrideInstancedPropertyBag::RefreshParameters(const FInstancedPropert
 	{
 	case EPCGGraphParameterEvent::GraphChanged:
 	{
-		// If the parameters property bags match, nothing to do.
-		if (ParentUserParameters->GetPropertyBagStruct() != Parameters.GetPropertyBagStruct())
-		{
-			bWasModified = true;
-			// Copy the parent parameters and reset overriddes
-			Parameters = *ParentUserParameters;
-			PropertiesIDsOverridden.Reset();
-		}
+		// We should always copy the parents parameters and reset overrides when the graph changes. Even if it is the same struct, values might be different.
+		bWasModified = true;
+		// Copy the parent parameters and reset overriddes
+		Parameters = *ParentUserParameters;
+		PropertiesIDsOverridden.Reset();
+#if WITH_EDITOR
+		// Notify the UI to force refresh
+		PCGDelegates::OnInstancedPropertyBagLayoutChanged.Broadcast(Parameters);
+#endif // WITH_EDITOR
 		break;
 	}
 	case EPCGGraphParameterEvent::Added:
@@ -1523,6 +1525,10 @@ bool FPCGOverrideInstancedPropertyBag::RefreshParameters(const FInstancedPropert
 		}
 
 		MigrateToNewBagInstance(*ParentUserParameters);
+#if WITH_EDITOR
+		// Notify the UI to force refresh
+		PCGDelegates::OnInstancedPropertyBagLayoutChanged.Broadcast(Parameters);
+#endif // WITH_EDITOR
 		break;
 	}
 	case EPCGGraphParameterEvent::ValueModifiedByParent:

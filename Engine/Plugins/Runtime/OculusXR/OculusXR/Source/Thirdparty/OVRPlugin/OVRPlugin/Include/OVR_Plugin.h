@@ -396,6 +396,9 @@ OVRP_EXPORT ovrpResult ovrp_GetNodeFrustum2(ovrpNode nodeId, ovrpFrustum2f* node
 
 
 
+
+
+
 /// Set relative rotation/translation to the eye pose
 OVRP_EXPORT ovrpResult
 ovrp_SetHeadPoseModifier(const ovrpQuatf* relativeRotation, const ovrpVector3f* relativeTranslation);
@@ -764,6 +767,9 @@ OVRP_EXPORT ovrpResult ovrp_SetControllerDrivenHandPosesAreNatural(ovrpBool cont
 OVRP_EXPORT ovrpResult ovrp_IsControllerDrivenHandPosesEnabled(ovrpBool* enabled);
 OVRP_EXPORT ovrpResult ovrp_AreControllerDrivenHandPosesNatural(ovrpBool* natural);
 
+OVRP_EXPORT ovrpResult ovrp_SetWideMotionModeHandPoses(ovrpBool wideMotionModeHandPoses);
+OVRP_EXPORT ovrpResult ovrp_IsWideMotionModeHandPosesEnabled(ovrpBool* enabled);
+
 
 
 
@@ -1102,6 +1108,20 @@ OVRP_EXPORT ovrpResult ovrp_GetCurrentInteractionProfile(ovrpHand hand, ovrpInte
 
 OVRP_EXPORT ovrpResult ovrp_GetLayerRecommendedResolution(int layerId, ovrpSizei* recommendedDimensions);
 OVRP_EXPORT ovrpResult ovrp_GetEyeLayerRecommendedResolution(ovrpSizei* recommendedDimensions);
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

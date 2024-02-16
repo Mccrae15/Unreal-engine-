@@ -518,6 +518,8 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	bShowServerDebugDrawingByDefault = true;
 	ServerDebugDrawingColorTintStrength = 0.0f;
 	ServerDebugDrawingColorTint = FLinearColor(0.0f, 0.0f, 0.0f, 1.0f);
+
+	bOneHMDPerProcess = false;
 }
 
 void ULevelEditorPlaySettings::PushDebugDrawingSettings()

@@ -1,9 +1,4 @@
-/*
-Copyright (c) Meta Platforms, Inc. and affiliates.
-All rights reserved.
-This source code is licensed under the license found in the
-LICENSE file in the root directory of this source tree.
-*/
+// Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include "OculusXRMovementAssetsFactories.h"
 
@@ -219,6 +214,20 @@ void UOculusXRMetahumanBodyRetargetAssetFactory::SetDefaults(const TSubclassOf<U
 		Retargeting->BoneRemapping.Emplace(EOculusXRBoneID::BodyRightHandLittleDistal, "pinky_03_r");
 		Retargeting->BoneRemapping.Emplace(EOculusXRBoneID::BodyRightHandLittleTip, NAME_None);
 
+		Retargeting->BoneRemapping.Emplace(EOculusXRBoneID::BodyLeftUpperLeg, "thigh_l");
+		Retargeting->BoneRemapping.Emplace(EOculusXRBoneID::BodyLeftLowerLeg, "calf_l");
+		Retargeting->BoneRemapping.Emplace(EOculusXRBoneID::BodyLeftFootAnkleTwist, NAME_None);
+		Retargeting->BoneRemapping.Emplace(EOculusXRBoneID::BodyLeftFootAnkle, "foot_l");
+		Retargeting->BoneRemapping.Emplace(EOculusXRBoneID::BodyLeftFootSubtalar, NAME_None);
+		Retargeting->BoneRemapping.Emplace(EOculusXRBoneID::BodyLeftFootTransverse, NAME_None);
+		Retargeting->BoneRemapping.Emplace(EOculusXRBoneID::BodyLeftFootBall, "ball_l");
+		Retargeting->BoneRemapping.Emplace(EOculusXRBoneID::BodyRightUpperLeg, "thigh_r");
+		Retargeting->BoneRemapping.Emplace(EOculusXRBoneID::BodyRightLowerLeg, "calf_r");
+		Retargeting->BoneRemapping.Emplace(EOculusXRBoneID::BodyRightFootAnkleTwist, NAME_None);
+		Retargeting->BoneRemapping.Emplace(EOculusXRBoneID::BodyRightFootAnkle, "foot_r");
+		Retargeting->BoneRemapping.Emplace(EOculusXRBoneID::BodyRightFootSubtalar, NAME_None);
+		Retargeting->BoneRemapping.Emplace(EOculusXRBoneID::BodyRightFootTransverse, NAME_None);
+		Retargeting->BoneRemapping.Emplace(EOculusXRBoneID::BodyRightFootBall, "ball_r");
 
 		{
 			FOculusXRBoneCorrection FromOculusToUnreal;
@@ -294,8 +303,42 @@ void UOculusXRMetahumanBodyRetargetAssetFactory::SetDefaults(const TSubclassOf<U
 			Hands.BoneCorrection.RotationOffset.Roll = 180;
 			Retargeting->LocalCorrections.Add(Hands);
 		}
+		{
+			FOculusXRBoneCorrectionSet Legs;
+			Legs.Bones.Add(EOculusXRBoneID::BodyLeftUpperLeg);
+			Legs.Bones.Add(EOculusXRBoneID::BodyLeftLowerLeg);
+			Legs.Bones.Add(EOculusXRBoneID::BodyRightUpperLeg);
+			Legs.Bones.Add(EOculusXRBoneID::BodyRightLowerLeg);
+			Legs.BoneCorrection.RotationOffset.Yaw = 180;
+			Retargeting->LocalCorrections.Add(Legs);
+		}
+		{
+			FOculusXRBoneCorrectionSet FootAnkles;
+			FootAnkles.Bones.Add(EOculusXRBoneID::BodyLeftFootAnkle);
+			FootAnkles.Bones.Add(EOculusXRBoneID::BodyRightFootAnkle);
+			FootAnkles.BoneCorrection.RotationOffset.Roll = 180;
+			FootAnkles.BoneCorrection.RotationOffset.Pitch = 175;
+			FootAnkles.BoneCorrection.RotationOffset.Yaw = -80;
+			Retargeting->LocalCorrections.Add(FootAnkles);
+		}
+		{
+			FOculusXRBoneCorrectionSet FootBalls;
+			FootBalls.Bones.Add(EOculusXRBoneID::BodyLeftFootBall);
+			FootBalls.BoneCorrection.RotationOffset.Yaw = 200;
+			FootBalls.BoneCorrection.PositionOffset.Y = -5;
+			FootBalls.BoneCorrection.PositionOffset.Z = 1;
+			Retargeting->LocalCorrections.Add(FootBalls);
+		}
+		{
+			FOculusXRBoneCorrectionSet FootBalls;
+			FootBalls.Bones.Add(EOculusXRBoneID::BodyRightFootBall);
+			FootBalls.BoneCorrection.RotationOffset.Yaw = 200;
+			FootBalls.BoneCorrection.PositionOffset.Y = 5;
+			FootBalls.BoneCorrection.PositionOffset.Z = -1;
+			Retargeting->LocalCorrections.Add(FootBalls);
+		}
 
-		Retargeting->RetargetingMode = EOculusXRRetargetingMode::RotationsPlusRoot;
+		Retargeting->RetargetingMode = EOculusXRRetargetingMode::RotationsPlusHips;
 		Retargeting->ForwardMesh = EOculusXRAxis::Y;
 	}
 }

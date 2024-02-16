@@ -51,14 +51,14 @@ public:
 
 	/**
 	 * Set the guardian material to a different one.
-	 * @Param Material The guardian material.
+	 * @param Material The guardian material.
 	 */
 	UFUNCTION(BlueprintSetter, Category = "MR Utility Kit")
 	void SetGuardianMaterial(UMaterialInstance* Material);
 
 	/**
 	 * Set the density of the grid.
-	 * @Param Density The grid density.
+	 * @param Density The grid density.
 	 */
 	UFUNCTION(BlueprintSetter, Category = "MR Utility Kit")
 	void SetGridDensity(double Density);

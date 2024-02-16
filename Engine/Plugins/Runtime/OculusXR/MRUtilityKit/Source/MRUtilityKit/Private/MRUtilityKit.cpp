@@ -7,6 +7,9 @@ LICENSE file in the root directory of this source tree.
 */
 
 #include "MRUtilityKit.h"
+#include "Interfaces/IPluginManager.h"
+#include "Misc/Paths.h"
+#include "ShaderCore.h"
 
 #if WITH_EDITOR
 #include "ISettingsModule.h"
@@ -67,6 +70,10 @@ void FMRUKModule::StartupModule()
 			GetMutableDefault<UMRUKSettings>());
 	}
 #endif //WITH_EDITOR
+	auto Plugin = IPluginManager::Get().FindPlugin(TEXT("MRUtilityKit"));
+	const FString PluginDirectory = FPaths::ConvertRelativePathToFull(Plugin->GetBaseDir());
+	FString ShaderDirectory = FPaths::Combine(PluginDirectory, TEXT("Shaders"));
+	AddShaderSourceDirectoryMapping("/MRUtilityKit", ShaderDirectory);
 }
 
 void FMRUKModule::ShutdownModule()

@@ -1543,6 +1543,9 @@ bool FSingleLayerWaterPassMeshProcessor::Process(
 		MaterialResource,
 		VertexFactory->GetType(),
 		NoLightmapPolicy,
+		// BEGIN META SECTION - XR Soft Occlusions
+		false,
+		// END META SECTION - XR Soft Occlusions
 		FeatureLevel,
 		bRenderSkylight,
 		false,
@@ -1595,6 +1598,9 @@ void FSingleLayerWaterPassMeshProcessor::CollectPSOInitializers(const FSceneText
 			Material,
 			VertexFactoryData.VertexFactoryType,
 			NoLightmapPolicy,
+			// BEGIN META SECTION - XR Soft Occlusions
+			false,
+			// END META SECTION - XR Soft Occlusions
 			FeatureLevel,
 			bRenderSkylight,
 			false,

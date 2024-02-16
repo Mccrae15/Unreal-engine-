@@ -95,37 +95,37 @@ public:
 
 	/**
 	 * Generate a uniform random position within the boundary of the plane.
-	 * @Return					The random position in local coordinate space.
+	 * @return The random position in local coordinate space.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "MR Utility Kit")
 	FVector GenerateRandomPositionOnPlane();
 
 	/**
 	 * Generate a uniform random position within the boundary of the plane from a random stream.
-	 * @Param RandomStream		A random generator used to generate the position on the plane.
-	 * @Return					The random position in local coordinate space.
+	 * @param RandomStream		A random generator used to generate the position on the plane.
+	 * @return					The random position in local coordinate space.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "MR Utility Kit")
 	FVector GenerateRandomPositionOnPlaneFromStream(const FRandomStream& RandomStream);
 
 	/**
 	 * Cast a ray and return the closest hit against the volume and plane bounds.
-	 * @Param Origin    Origin The origin of the ray.
-	 * @Param Direction Direction The direction of the ray.
-	 * @Param MaxDist   The maximum distance the ray should travel.
-	 * @Param OutHit    The closest hit.
-	 * @Return          Whether the ray hit anything
+	 * @param Origin    Origin The origin of the ray.
+	 * @param Direction Direction The direction of the ray.
+	 * @param MaxDist   The maximum distance the ray should travel.
+	 * @param OutHit    The closest hit.
+	 * @return          Whether the ray hit anything
 	 */
 	UFUNCTION(BlueprintCallable, Category = "MR Utility Kit")
 	bool Raycast(const FVector& Origin, const FVector& Direction, float MaxDist, FMRUKHit& OutHit);
 
 	/**
 	 * Cast a ray and collect hits against the volume and plane bounds. The order of the hits in the array is not specified.
-	 * @Param Origin    Origin The origin of the ray.
-	 * @Param Direction Direction The direction of the ray.
-	 * @Param MaxDist   The maximum distance the ray should travel.
-	 * @Param OutHits   The hits the ray collected.
-	 * @Return          Whether the ray hit anything
+	 * @param Origin    Origin The origin of the ray.
+	 * @param Direction Direction The direction of the ray.
+	 * @param MaxDist   The maximum distance the ray should travel.
+	 * @param OutHits   The hits the ray collected.
+	 * @return          Whether the ray hit anything
 	 */
 	UFUNCTION(BlueprintCallable, Category = "MR Utility Kit")
 	bool RaycastAll(const FVector& Origin, const FVector& Direction, float MaxDist, TArray<FMRUKHit>& OutHits);
@@ -133,36 +133,36 @@ public:
 	/**
 	 * Attach a procedural mesh to the anchor. The mesh will match the size, position and shape of the volume and/or plane
 	 * if they are set.
-	 * @Param PlaneUVAdjustments    Scale and offset to apply to the UV texture coordinates. If more than one is specified
-	 *								then multiple UV texture coordinates are created (up to 4) and adjustments applied to
-	 *								each. This can be left empty in which case a single set of UV texture coordinates are
-	 *								created in the range 0 to 1 for the plane.
-	 * @Param GenerateCollision     Whethere to generate collision geometry or not
-	 * @Param ProceduralMaterial    Material to use on the procedural generated mesh.
+	 * @param PlaneUVAdjustments Scale and offset to apply to the UV texture coordinates. If more than one is specified
+	 *							 then multiple UV texture coordinates are created (up to 4) and adjustments applied to
+	 *							 each. This can be left empty in which case a single set of UV texture coordinates are
+	 *							 created in the range 0 to 1 for the plane.
+	 * @param GenerateCollision  Whethere to generate collision geometry or not
+	 * @param ProceduralMaterial Material to use on the procedural generated mesh.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "MR Utility Kit", meta = (AutoCreateRefTerm = "PlaneUVAdjustments"))
 	void AttachProceduralMesh(TArray<FMRUKPlaneUV> PlaneUVAdjustments, bool GenerateCollision = true, UMaterialInterface* ProceduralMaterial = nullptr);
 
 	/**
 	 * Check if the anchor has the given label.
-	 * @Param Label The label to check.
-	 * @Return Whether the anchor has the given label.
+	 * @param Label The label to check.
+	 * @return Whether the anchor has the given label.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "MR Utility Kit")
 	bool HasLabel(const FString& Label) const;
 
 	/**
 	 * Check if the anchor has any of the given labels.
-	 * @Param Labels The labels to check.
-	 * @Return Whether the anchor has any of the given labels.
+	 * @param Labels The labels to check.
+	 * @return Whether the anchor has any of the given labels.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "MR Utility Kit")
 	bool HasAnyLabel(const TArray<FString>& Labels) const;
 
 	/**
 	 * Check if the anchor passes the given label filter
-	 * @Param Labels The labels to check.
-	 * @Return Whether the anchor has any of the given labels.
+	 * @param LabelFilter The labels to check.
+	 * @return            Whether the anchor has any of the given labels.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "MR Utility Kit")
 	bool PassesLabelFilter(const FMRUKLabelFilter& LabelFilter) const;
@@ -177,11 +177,12 @@ public:
 	double GetClosestSurfacePosition(const FVector& TestPosition, FVector& OutSurfacePosition);
 
 	/**
-	 *	Checks if the given position is on or inside the volume bounds.
-	 *  Floor, ceiling and wall anchors will be excluded from the search.
-	 *	@param WorldPosition      The position in world space to check
-	 *	@param TestVerticalBounds Whether the vertical bounds should be checked or not
-	 *	@return					  The anchor the WorldPosition is in. A null pointer otherwise.
+	 * Checks if the given position is on or inside the volume bounds.
+	 * Floor, ceiling and wall anchors will be excluded from the search.
+	 * @param Position           The position in world space to check
+	 * @param TestVerticalBounds Whether the vertical bounds should be checked or not
+	 * @param Tolerance          Tolerance
+	 * @return					 The anchor the WorldPosition is in. A null pointer otherwise.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "MR Utility Kit")
 	bool IsPositionInVolumeBounds(const FVector& Position, bool TestVerticalBounds = true, double Tolerance = 0.0);
@@ -189,8 +190,7 @@ public:
 	/**
 	 * Gets a natural “forward” direction for anchors; for planes, this is always Z-forward. 
 	 * For volumes, it’s the X/Y cardinal axis that aligns best with the normal of the closest wall.
-	 * @Param Anchor The anchor which forward direction should be calculated.
-	 * @Return       The forward facing direction.
+	 * @return The forward facing direction.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "MR Utility Kit")
 	FVector GetFacingDirection() const;
@@ -198,11 +198,11 @@ public:
 	/**
 	 * Spawn a mesh on the position of this anchor.
 	 * The actor should have Z as up, Y as right and X as forward.
-	 * @Param ActorClass The Class to spawn at the anchors position.
-	 * @Param MatchAspectRatio If true the actor will be rotated to best match the aspect ratio of the volume (applies to volumes only).
-	 * @Param CalculateFacingDirection If true then actor will be rotated to face away from the closest wall (applies to volumes only).
-	 * @Param ScalingMode Sets how to scale the actor to fit the size of the volume/plane.
-	 * @Return The spawned actor or null if nothing was spawned.
+	 * @param ActorClass The Class to spawn at the anchors position.
+	 * @param MatchAspectRatio If true the actor will be rotated to best match the aspect ratio of the volume (applies to volumes only).
+	 * @param CalculateFacingDirection If true then actor will be rotated to face away from the closest wall (applies to volumes only).
+	 * @param ScalingMode Sets how to scale the actor to fit the size of the volume/plane.
+	 * @return The spawned actor or null if nothing was spawned.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "MR Utility Kit")
 	AActor* SpawnInterior(const TSubclassOf<class AActor>& ActorClass, bool MatchAspectRatio = false, bool CalculateFacingDirection = false, EMRUKSpawnerScalingMode ScalingMode = EMRUKSpawnerScalingMode::Stretch);

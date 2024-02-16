@@ -1,10 +1,5 @@
-/*
-Copyright (c) Meta Platforms, Inc. and affiliates.
-All rights reserved.
+// Copyright (c) Meta Platforms, Inc. and affiliates.
 
-This source code is licensed under the license found in the
-LICENSE file in the root directory of this source tree.
-*/
 #include "OculusXRTelemetryPrivacySettings.h"
 
 #include "OculusXRHMDModule.h"
@@ -36,7 +31,7 @@ FText UOculusXRTelemetryPrivacySettings::GetFalseStateTooltip() const
 
 FText UOculusXRTelemetryPrivacySettings::GetFalseStateDescription() const
 {
-	return LOCTEXT("FalseStateDescription", "By opting out you don't allow Meta to collect usage data on MetaXR plugin. This data helps improve the Meta SDKs and is collected in accordance with Meta's Privacy Policy.");
+	return LOCTEXT("FalseStateDescription", "By opting out you don't allow Meta to collect usage data on its SDKs, such as package name, class names and plugin configuration in your projects using Meta SDKs on this machine. This data helps improve the Meta SDKs and is collected in accordance with Meta's Privacy Policy.");
 };
 
 FText UOculusXRTelemetryPrivacySettings::GetTrueStateLabel() const
@@ -51,7 +46,7 @@ FText UOculusXRTelemetryPrivacySettings::GetTrueStateTooltip() const
 
 FText UOculusXRTelemetryPrivacySettings::GetTrueStateDescription() const
 {
-	return LOCTEXT("TrueStateDescription", "By opting in you allow Meta to collect usage data on MetaXR plugin. This data helps improve the Meta SDKs and is collected in accordance with Meta's Privacy Policy.");
+	return LOCTEXT("TrueStateDescription", "By opting in you allow Meta to collect usage data on its SDKs, such as package name, class names and plugin configuration in your projects using Meta SDKs on this machine. This data helps improve the Meta SDKs and is collected in accordance with Meta's Privacy Policy.");
 };
 
 FString UOculusXRTelemetryPrivacySettings::GetAdditionalInfoUrl() const

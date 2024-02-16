@@ -3054,7 +3054,7 @@ public class AndroidPlatform : Platform
 
 		// Deploy .so to device is either defined from the settings or with the param
 		bool bDeploySoToDevice = false;
-		Ini.GetBool("/Script/OculusHMD.OculusHMDRuntimeSettings", "bDeploySoToDevice", out bDeploySoToDevice);
+        Ini.GetBool("/Script/OculusXRHMD.OculusXRHMDRuntimeSettings", "bDeploySoToDevice", out bDeploySoToDevice);
 		bDeploySoToDevice |= Params.DeploySoToDevice;
 
 		foreach (var DeviceName in Params.DeviceNames)
@@ -3635,7 +3635,7 @@ public class AndroidPlatform : Platform
                     StripSymbols(SOFile, StrippedSoFile);
                 }
 
-                string DestSoPath = string.Format("{0}/{1}", RemoteDir, StrippedSoFile.GetFileName());
+                string DestSoPath = string.Format("/data/local/tmp/{0}", StrippedSoFile.GetFileName());
                 string PushCommandLine = string.Format("push \"{0}\" \"{1}\"", StrippedSoFile.FullName, DestSoPath);
                 string CopyCommandLine = string.Format("shell run-as {0} cp \"{1}\" ./libUnreal.so", PackageName, DestSoPath);
                 string ModCommandLine = string.Format("shell run-as {0} chmod +x ./libUnreal.so", PackageName);

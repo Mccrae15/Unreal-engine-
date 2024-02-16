@@ -1,7 +1,7 @@
 {
 	"FileVersion": 3,
 	"Version": 1,
-	"VersionName": "1.92.0",
+	"VersionName": "1.94.0",
 	"FriendlyName": "Meta XR",
 	"Description": "Support for Meta Quest headsets and controllers",
 	"Category": "Virtual Reality",
@@ -100,6 +100,14 @@
 			]
 		},
 		{
+			"Name": "OculusXRProjectSetupTool",
+			"Type": "Editor",
+			"LoadingPhase": "PostEngineInit",
+			"PlatformAllowList": [
+				"Win64"
+			]
+		},
+		{
 			"Name": "OculusXRPassthrough",
 			"Type": "Runtime",
 			"LoadingPhase": "PostEngineInit",
@@ -135,6 +143,10 @@
 			"Name": "OpenXR",
 			"Enabled": false,
 			"Optional": true
+		},
+		{
+			"Name": "PluginBrowser",
+			"Enabled": true
 		}
 	]
 }

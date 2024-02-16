@@ -19,6 +19,7 @@
 
 #include "Editor.h"
 #include "EditorFramework/AssetImportData.h"
+#include "ObjectTools.h"
 
 #include "OpenVDBImportWindow.h"
 #include "HAL/PlatformApplicationMisc.h"
@@ -32,6 +33,14 @@
 #define LOCTEXT_NAMESPACE "USparseVolumeTextureFactory"
 
 DEFINE_LOG_CATEGORY_STATIC(LogSparseVolumeTextureFactory, Log, All);
+
+static int32 GSVTImportBakeFrameTranslations = 1;
+static FAutoConsoleVariableRef CVarSVTSImportBakeFrameTranslations(
+	TEXT("r.SparseVolumeTexture.Import.BakeVDBFrameTranslations"),
+	GSVTImportBakeFrameTranslations,
+	TEXT("If enabled, VDB sequences with translations that change across the frames/files will have the translation baked into the resulting SVT frames."),
+	ECVF_Default
+);
 
 static void ComputeDefaultOpenVDBGridAssignment(const TArray<TSharedPtr<FOpenVDBGridComponentInfo>>& GridComponentInfo, int32 NumFiles, FOpenVDBImportOptions* ImportOptions)
 {
@@ -103,18 +112,37 @@ static void ComputeDefaultOpenVDBGridAssignment(const TArray<TSharedPtr<FOpenVDB
 	ImportOptions->bIsSequence = NumFiles > 1;
 }
 
-static FString GetVDBSequenceBaseFileName(const FString& FileName, bool bDiscardUnderscore)
+static FString GetVDBSequenceBaseFileName(const FString& FileName, bool bDiscardNumbersOnly)
 {
 	const FString CleanFileName = FPaths::GetCleanFilename(FileName);
-	const FString CleanFileNameWithoutExt = CleanFileName.LeftChop(4);
-	const int32 LastNonDigitIndex = CleanFileNameWithoutExt.FindLastCharByPredicate([&](TCHAR Letter) 
-		{ 
-			const bool bIsDigit = FChar::IsDigit(Letter);
-			const bool bIsUnderscore = bDiscardUnderscore && Letter == TEXT('_');
-			return !bIsDigit && !bIsUnderscore;
-		}) + 1;
-	const int32 DigitCount = CleanFileNameWithoutExt.Len() - LastNonDigitIndex;
-	const FString CleanFileNameWithoutSuffix = CleanFileNameWithoutExt.LeftChop(DigitCount);
+	int32 NumValidChars = CleanFileName.Len() - 4; // chop off the file extension
+
+	// Remove any digits at the end
+	NumValidChars = CleanFileName.FindLastCharByPredicate([&](TCHAR Letter){ return !FChar::IsDigit(Letter); }, NumValidChars) + 1;
+
+	// Optionally remove other unwanted chars like underscores and invalid object name chars that would later be replaced by underscores
+	if (!bDiscardNumbersOnly)
+	{
+		NumValidChars = CleanFileName.FindLastCharByPredicate([&](TCHAR Letter) 
+			{
+				// INVALID_OBJECTNAME_CHARACTERS is defined in NameTypes.h and is a string literal containing all the invalid chars.
+				// The number at the end of a filename in a sequence is often separated by an underscore or other special character,
+				// so when we want to get the base filename for deriving the new asset name, we also discard these characters.
+				// Underscores are not part of the invalid chars string literal, so we append them here to also discard these chars.
+				const TCHAR* InvalidChars = TEXT("_")INVALID_OBJECTNAME_CHARACTERS;
+				while (*InvalidChars)
+				{
+					if (Letter == *InvalidChars)
+					{
+						return false;
+					}
+					++InvalidChars;
+				}
+				return true;
+			}, NumValidChars) + 1;
+	}
+
+	const FString CleanFileNameWithoutSuffix = CleanFileName.Left(NumValidChars);
 	return CleanFileNameWithoutSuffix;
 }
 
@@ -133,12 +161,24 @@ static TArray<FString> FindOpenVDBSequenceFileNames(const FString& Filename)
 	{
 		const FString Path = FPaths::GetPath(Filename);
 		const FString CleanFilename = FPaths::GetCleanFilename(Filename);
-		const FString CleanFilenameWithoutSuffix = GetVDBSequenceBaseFileName(Filename, false /*bDiscardUnderscore*/);
+		const FString CleanFilenameWithoutSuffix = GetVDBSequenceBaseFileName(Filename, true /*bDiscardNumbersOnly*/);
 
 		// Find all files potentially part of the sequence
 		TArray<FString> PotentialSequenceFilenames;
 		IFileManager::Get().FindFiles(PotentialSequenceFilenames, *Path, TEXT("*.vdb"));
-		PotentialSequenceFilenames = PotentialSequenceFilenames.FilterByPredicate([CleanFilenameWithoutSuffix](const FString& Str) { return Str.StartsWith(CleanFilenameWithoutSuffix); });
+		PotentialSequenceFilenames = PotentialSequenceFilenames.FilterByPredicate([&CleanFilenameWithoutSuffix](const FString& Str) 
+			{ 
+				if (!CleanFilenameWithoutSuffix.IsEmpty())
+				{
+					// Check for the same base filename
+					return Str.StartsWith(CleanFilenameWithoutSuffix);
+				}
+				else
+				{
+					// Removing the digits at the end of the input file resulted in an empty string, so we are looking for numeric filenames only (excluding the 4 chars file extension)
+					return Str.LeftChop(4).IsNumeric();
+				}
+			});
 
 		auto GetFilenameNumberSuffix = [](const FString& Filename) -> int32
 		{
@@ -560,7 +600,7 @@ UObject* USparseVolumeTextureFactory::ImportInternal(UClass* InClass, UObject* I
 	}
 
 	// Utility function for computing the bounding box encompassing the bounds of all frames in the SVT.
-	auto ExpandVolumeBounds = [](const FOpenVDBImportOptions& ImportOptions, const TArray<FOpenVDBGridInfo>& GridInfoArray, FIntVector3& VolumeBoundsMin, FIntVector3& VolumeBoundsMax)
+	auto ExpandVolumeBounds = [](const FOpenVDBImportOptions& ImportOptions, const TArray<FOpenVDBGridInfo>& GridInfoArray, FIntVector3& VolumeBoundsMin, FIntVector3& VolumeBoundsMax, float* TransformMin, float* TransformMax)
 	{
 		for (const FOpenVDBSparseVolumeAttributesDesc& Attributes : ImportOptions.Attributes)
 		{
@@ -576,6 +616,15 @@ UObject* USparseVolumeTextureFactory::ImportInternal(UClass* InClass, UObject* I
 					VolumeBoundsMax.X = FMath::Max(VolumeBoundsMax.X, GridInfo.VolumeActiveAABBMax.X);
 					VolumeBoundsMax.Y = FMath::Max(VolumeBoundsMax.Y, GridInfo.VolumeActiveAABBMax.Y);
 					VolumeBoundsMax.Z = FMath::Max(VolumeBoundsMax.Z, GridInfo.VolumeActiveAABBMax.Z);
+
+					for (int32 y = 0; y < 4; ++y)
+					{
+						for (int32 x = 0; x < 4; ++x)
+						{
+							TransformMin[y * 4 + x] = FMath::Min(TransformMin[y * 4 + x], GridInfo.Transform.M[y][x]);
+							TransformMax[y * 4 + x] = FMath::Max(TransformMax[y * 4 + x], GridInfo.Transform.M[y][x]);
+						}
+					}
 				}
 			}
 		}
@@ -583,6 +632,13 @@ UObject* USparseVolumeTextureFactory::ImportInternal(UClass* InClass, UObject* I
 
 	FIntVector3 VolumeBoundsMin = FIntVector3(INT32_MAX, INT32_MAX, INT32_MAX);
 	FIntVector3 VolumeBoundsMax = FIntVector3(INT32_MIN, INT32_MIN, INT32_MIN);
+	float TransformMin[16];
+	float TransformMax[16];
+	for (int32 i = 0; i < 16; ++i)
+	{
+		TransformMin[i] = FLT_MAX;
+		TransformMax[i] = -FLT_MAX;
+	}
 
 	// Import as either single static SVT or a sequence of frames, making up an animated SVT
 	if (!ImportOptions.bIsSequence)
@@ -592,10 +648,10 @@ UObject* USparseVolumeTextureFactory::ImportInternal(UClass* InClass, UObject* I
 		FScopedSlowTask ImportTask(1.0f, LOCTEXT("ImportingVDBStatic", "Importing static OpenVDB"));
 		ImportTask.MakeDialog(true);
 
-		ExpandVolumeBounds(ImportOptions, PreviewData.GridInfo, VolumeBoundsMin, VolumeBoundsMax);
+		ExpandVolumeBounds(ImportOptions, PreviewData.GridInfo, VolumeBoundsMin, VolumeBoundsMax, TransformMin, TransformMax);
 
 		UE::SVT::FTextureData TextureData{};
-		const bool bConversionSuccess = ConvertOpenVDBToSparseVolumeTexture(PreviewData.LoadedFile, ImportOptions, VolumeBoundsMin, TextureData);
+		const bool bConversionSuccess = ConvertOpenVDBToSparseVolumeTexture(PreviewData.LoadedFile, ImportOptions, VolumeBoundsMin, false /*bBakeTranslation*/, TextureData);
 
 		if (!bConversionSuccess)
 		{
@@ -641,7 +697,7 @@ UObject* USparseVolumeTextureFactory::ImportInternal(UClass* InClass, UObject* I
 
 		// Compute volume bounds and check sequence files for compatiblity
 		std::mutex VolumeBoundsMutex;
-		ParallelFor(NumFrames, [&bErrored, &VolumeBoundsMutex, &VolumeBoundsMin, &VolumeBoundsMax, &ExpandVolumeBounds, &PreviewData, &ImportOptions](int32 FrameIdx)
+		ParallelFor(NumFrames, [&bErrored, &VolumeBoundsMutex, &VolumeBoundsMin, &VolumeBoundsMax, TransformMin = &TransformMin[0], TransformMax = &TransformMax[0], &ExpandVolumeBounds, &PreviewData, &ImportOptions](int32 FrameIdx)
 			{
 				if (bErrored.load())
 				{
@@ -695,13 +751,46 @@ UObject* USparseVolumeTextureFactory::ImportInternal(UClass* InClass, UObject* I
 				// Update sequence volume bounds and increment ProcessedFramesCounter
 				{
 					std::lock_guard<std::mutex> Lock(VolumeBoundsMutex);
-					ExpandVolumeBounds(ImportOptions, FrameGridInfo, VolumeBoundsMin, VolumeBoundsMax);
+					ExpandVolumeBounds(ImportOptions, FrameGridInfo, VolumeBoundsMin, VolumeBoundsMax, TransformMin, TransformMax);
 				}
 			});
 
 		if (bErrored.load())
 		{
 			return nullptr;
+		}
+
+		FMatrix44f TransformMatrixMin;
+		FMatrix44f TransformMatrixMax;
+		for (int32 y = 0; y < 4; ++y)
+		{
+			for (int32 x = 0; x < 4; ++x)
+			{
+				TransformMatrixMin.M[y][x] = TransformMin[y * 4 + x];
+				TransformMatrixMax.M[y][x] = TransformMax[y * 4 + x];
+			}
+		}
+		const FVector3f TransformScaleMin = TransformMatrixMin.GetScaleVector();
+		const FVector3f TransformScaleMax = TransformMatrixMax.GetScaleVector();
+		const FVector3f TransformTransMin = TransformMatrixMin.GetOrigin();
+		const FVector3f TransformTransMax = TransformMatrixMax.GetOrigin();
+		const bool bSameScaleForAllFrames = (TransformScaleMax - TransformScaleMin).GetAbsMax() <= UE_SMALL_NUMBER;
+		const bool bSameTranslationForAllFrames = (TransformTransMax - TransformTransMin).GetAbsMax() <= UE_SMALL_NUMBER;
+
+		// We currently do not support changing scale/rotation across frames
+		if (!bSameScaleForAllFrames)
+		{
+			UE_LOG(LogSparseVolumeTextureFactory, Warning, TEXT("OpenVDB sequence is using different scalings and rotations across all frames"));
+		}
+
+		const bool bBakeTranslations = !bSameTranslationForAllFrames && (GSVTImportBakeFrameTranslations != 0);
+
+		// But we can bake translation changes into the SVT
+		if (bBakeTranslations)
+		{
+			FVector3f OffsetF = TransformTransMin / TransformScaleMin;
+			FIntVector3 Offset = FIntVector3(FMath::Floor(OffsetF.X), FMath::Floor(OffsetF.Y), FMath::Floor(OffsetF.Z));
+			VolumeBoundsMin += Offset;
 		}
 
 		ImportTask.EnterProgressFrame(1.0f, LOCTEXT("ConvertingVDBAnim", "Converting OpenVDB animation"));
@@ -732,7 +821,7 @@ UObject* USparseVolumeTextureFactory::ImportInternal(UClass* InClass, UObject* I
 
 			AsyncTask(ENamedThreads::AnyNormalThreadNormalTask,
 				[FrameIdx, NumFrames, &PreviewData, &ImportOptions, &UncookedFramesData,
-				AllTasksFinishedEvent, &bErrored, &bCanceled, &FinishedTasksCounter, &ProcessedFramesCounter, &VolumeBoundsMin]()
+				AllTasksFinishedEvent, &bErrored, &bCanceled, &FinishedTasksCounter, &ProcessedFramesCounter, &VolumeBoundsMin, bBakeTranslations]()
 				{
 					// Ensure the FinishedTasksCounter will be incremented in all cases
 					FScopedIncrementer Incremeter(FinishedTasksCounter, NumFrames, AllTasksFinishedEvent);
@@ -756,7 +845,7 @@ UObject* USparseVolumeTextureFactory::ImportInternal(UClass* InClass, UObject* I
 					}
 
 					UE::SVT::FTextureData TextureData{};
-					const bool bConversionSuccess = ConvertOpenVDBToSparseVolumeTexture(LoadedFrameFile, ImportOptions, VolumeBoundsMin, TextureData);
+					const bool bConversionSuccess = ConvertOpenVDBToSparseVolumeTexture(LoadedFrameFile, ImportOptions, VolumeBoundsMin, bBakeTranslations, TextureData);
 
 					if (!bConversionSuccess)
 					{
@@ -822,10 +911,13 @@ UObject* USparseVolumeTextureFactory::ImportInternal(UClass* InClass, UObject* I
 		FName NewObjectName = InName;
 		if (!bIsReimport)
 		{
-			FString NewFileName = GetVDBSequenceBaseFileName(Filename, true /*bDiscardUnderscore*/);
+			FString NewFileName = GetVDBSequenceBaseFileName(Filename, false /*bDiscardNumbersOnly*/);
+			// GetVDBSequenceBaseFileName() discards the number as well as underscores and invalid chars at the end of the filename.
+			// We still need to ensure that there are no additional invalid characters in the filename.
+			NewFileName = ObjectTools::SanitizeObjectName(NewFileName);
 
-			// Don't try to rename the package if it's the transient package
-			if (InParent != GetTransientPackage() && InParent->IsA<UPackage>())
+			// Don't try to rename the package if it's the transient package or the new filename is empty
+			if (!NewFileName.IsEmpty() && (InParent != GetTransientPackage() && InParent->IsA<UPackage>()))
 			{
 				const FString PackageName = InParent->GetName(); // Contains name with path
 				int32 LastSeparatorIndex = 0;

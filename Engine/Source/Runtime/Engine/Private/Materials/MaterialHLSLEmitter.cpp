@@ -226,6 +226,10 @@ static FString GenerateMaterialTemplateHLSL(EShaderPlatform ShaderPlatform,
 		LazyPrintf.PushParam(TEXT("return 0"));
 	}
 
+	// BEGIN META SECTION - XR Soft Occlusions
+	LazyPrintf.PushParam(*FString::Printf(TEXT("return %.5f"), Material.GetXRSoftOcclusionsDepthBias()));
+	// END META SECTION - XR Soft Occlusions
+
 	LazyPrintf.PushParam(*FString::Printf(TEXT("return %.5f"), Material.GetTranslucencyDirectionalLightingIntensity()));
 
 	LazyPrintf.PushParam(*FString::Printf(TEXT("return %.5f"), Material.GetTranslucentShadowDensityScale()));

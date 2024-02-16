@@ -409,6 +409,9 @@ bool FNaniteMeshProcessor::TryAddMeshBatch(
 		Material,
 		MeshBatch.VertexFactory->GetType(),
 		FUniformLightMapPolicy(LightMapPolicyType),
+		// BEGIN META SECTION - XR Soft Occlusions
+		false,
+		// END META SECTION - XR Soft Occlusions
 		FeatureLevel,
 		bRenderSkylight,
 		b128BitRequirement,
@@ -519,6 +522,9 @@ void FNaniteMeshProcessor::CollectPSOInitializersForSkyLight(
 			Material,
 			VertexFactoryData.VertexFactoryType,
 			FUniformLightMapPolicy(UniformLightMapPolicyType),
+			// BEGIN META SECTION - XR Soft Occlusions
+			false,
+			// END META SECTION - XR Soft Occlusions
 			FeatureLevel,
 			bRenderSkylight,
 			b128BitRequirement,

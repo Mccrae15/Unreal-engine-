@@ -23,9 +23,30 @@ public:
 	
 	/**
 	 * Enable modernized Xcode, when building from Xcode, use native Xcode for bundle generation and archiving instead of UBT
+     * Restart required to apply this setting
 	 */
-	UPROPERTY(EditAnywhere, config, Category=Xcode, meta = (DisplayName = "Modernized Xcode"))
+	UPROPERTY(EditAnywhere, config, Category=Xcode, meta = (DisplayName = "Modernized Xcode", ConfigRestartRequired = true))
 	bool bUseModernXcode;
+    
+    UFUNCTION()
+    static bool ShouldDisableIOSSettings()
+    {
+#if PLATFORM_MAC
+        auto DefaultObject = Cast<UXcodeProjectSettings>(UXcodeProjectSettings::StaticClass()->GetDefaultObject());
+        if (DefaultObject)
+        {
+            // Some iOS build settings no longer functional under Modern Xcode
+            return DefaultObject->bUseModernXcode;
+        }
+        else
+        {
+            return false;
+        }
+#else
+        // On PC, even after turning on Modern Xcode for remote Mac, should let user config local iOS related settings
+        return false;
+#endif
+    }
 	
 	/**
 	 * Team ID used for native Xcode code signing. This must be the 10 letters/numbers ID found in Membership Details tab found in https://developer.apple.com/account
@@ -45,6 +66,14 @@ public:
 	UPROPERTY(EditAnywhere, config, Category=Xcode, meta = (EditCondition="bUseModernXcode", DisplayName = "Bundle ID Prefix"))
 	FString CodeSigningPrefix;
 	
+	/**
+	 * The name of the Mac .app when making an archived build (for uploading to App Store, etc). The Finder shows Mac apps by their .app name, and we don't name the .app  with
+	 * "pretty" names during development. When packaging for distribution (or using Archive menu in Xcode) this will become the name of the .app, and will be what end users
+	 * will have on their Mac. If this is not set, the .app will have the name of the .uproject file
+	 */
+	UPROPERTY(EditAnywhere, config, Category=Xcode, meta = (EditCondition="bUseModernXcode", DisplayName = "Mac: Published App Name"))
+	FString ApplicationDisplayName;
+
 	/**
 	 * The App Category that will be used for Apple App Store submissions
 	 */

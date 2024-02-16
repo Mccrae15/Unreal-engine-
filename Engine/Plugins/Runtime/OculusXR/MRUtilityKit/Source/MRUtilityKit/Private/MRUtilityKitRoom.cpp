@@ -1130,31 +1130,45 @@ TArray<TObjectPtr<AMRUKAnchor>> AMRUKRoom::ComputeConnectedWalls() const
 	return ConnectedWalls;
 }
 
-TArray<AActor*> AMRUKRoom::SpawnInterior(const TMap<FString, FMRUKSpawnGroup>& SpawnGroups, UMaterialInterface* ProceduralMaterial)
+TArray<AActor*> AMRUKRoom::SpawnInterior(const TMap<FString, FMRUKSpawnGroup>& SpawnGroups, UMaterialInterface* ProceduralMaterial, bool ShouldFallbackToProcedural)
 {
-	return SpawnInteriorFromStream(SpawnGroups, FRandomStream(NAME_None), ProceduralMaterial);
+	return SpawnInteriorFromStream(SpawnGroups, FRandomStream(NAME_None), ProceduralMaterial, ShouldFallbackToProcedural);
 }
 
-TArray<AActor*> AMRUKRoom::SpawnInteriorFromStream(const TMap<FString, FMRUKSpawnGroup>& SpawnGroups, const FRandomStream& RandomStream, UMaterialInterface* ProceduralMaterial)
+TArray<AActor*> AMRUKRoom::SpawnInteriorFromStream(const TMap<FString, FMRUKSpawnGroup>& SpawnGroups, const FRandomStream& RandomStream, UMaterialInterface* ProceduralMaterial, bool GlobalShouldFallbackToProcedural)
 {
 	TArray<AActor*> InteriorActors;
 
+	const auto ShouldFallbackToProcedural = [GlobalShouldFallbackToProcedural](const FMRUKSpawnGroup* Anchor) -> bool {
+		check(Anchor);
+		switch (Anchor->FallbackToProcedural)
+		{
+			case EMRUKFallbackToProceduralOverwrite::Default:
+				return GlobalShouldFallbackToProcedural;
+			case EMRUKFallbackToProceduralOverwrite::Fallback:
+				return true;
+			case EMRUKFallbackToProceduralOverwrite::NoFallback:
+				return false;
+		}
+		return false;
+	};
+
 	float WorldToMeters = GetWorldSettings()->WorldToMeters;
 	auto WallFace = SpawnGroups.Find(FMRUKLabels::WallFace);
-	if (!WallFace || (WallFace->Actors.IsEmpty() && WallFace->FallbackToProcedural))
+	if (!WallFace || (WallFace->Actors.IsEmpty() && ShouldFallbackToProcedural(WallFace)))
 	{
 		// If no wall mesh is given we want to spawn the walls procedural to make seemles UVs
 		AttachProceduralMeshToWalls(ProceduralMaterial);
 	}
 	auto Floor = SpawnGroups.Find(FMRUKLabels::Floor);
-	if (FloorAnchor && (!Floor || (Floor->Actors.IsEmpty() && Floor->FallbackToProcedural)))
+	if (FloorAnchor && (!Floor || (Floor->Actors.IsEmpty() && ShouldFallbackToProcedural(Floor))))
 	{
 		// Use metric scaling to match walls
 		FVector2D Scale = FloorAnchor->PlaneBounds.GetSize() / WorldToMeters;
 		FloorAnchor->AttachProceduralMesh({ { FVector2D::ZeroVector, Scale } }, true, ProceduralMaterial);
 	}
 	auto Ceiling = SpawnGroups.Find(FMRUKLabels::Ceiling);
-	if (CeilingAnchor && (!Ceiling || (Ceiling->Actors.IsEmpty() && Ceiling->FallbackToProcedural)))
+	if (CeilingAnchor && (!Ceiling || (Ceiling->Actors.IsEmpty() && ShouldFallbackToProcedural(Ceiling))))
 	{
 		// Use metric scaling to match walls
 		FVector2D Scale = CeilingAnchor->PlaneBounds.GetSize() / WorldToMeters;
@@ -1184,7 +1198,7 @@ TArray<AActor*> AMRUKRoom::SpawnInteriorFromStream(const TMap<FString, FMRUKSpaw
 			}
 			if (SpawnGroup->Actors.IsEmpty())
 			{
-				if (!SpawnGroup->FallbackToProcedural)
+				if (!ShouldFallbackToProcedural(SpawnGroup))
 				{
 					SpawnProceduralMesh = false;
 				}

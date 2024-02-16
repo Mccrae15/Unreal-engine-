@@ -1,10 +1,4 @@
-﻿/*
-Copyright (c) Meta Platforms, Inc. and affiliates.
-All rights reserved.
-
-This source code is licensed under the license found in the
-LICENSE file in the root directory of this source tree.
-*/
+﻿// Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include "OculusXRPrivacyNotification.h"
 
@@ -52,6 +46,7 @@ void OculusXRTelemetry::SpawnNotification()
 		if (FOculusXRHMDModule::Get().IsOVRPluginAvailable() && FOculusXRHMDModule::GetPluginWrapper().IsInitialized())
 		{
 			Events::FEditorConsent().End(bConsent ? EAction::Success : EAction::Fail);
+			OculusXRTelemetry::SetTelemetryConsent(bConsent);
 		}
 	};
 	Info.ButtonDetails.Add(

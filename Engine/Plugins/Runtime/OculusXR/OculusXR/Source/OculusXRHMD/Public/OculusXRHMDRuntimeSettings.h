@@ -1,3 +1,4 @@
+// @lint-ignore-every LICENSELINT
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
@@ -163,6 +164,7 @@ public:
 	/** Whether Scene can be used with the app */
 	UPROPERTY(config, EditAnywhere, Category = Mobile, meta = (DisplayName = "Scene Support"))
 	bool bSceneSupportEnabled;
+
 
 
 	/** Whether body tracking functionality can be used with the app */

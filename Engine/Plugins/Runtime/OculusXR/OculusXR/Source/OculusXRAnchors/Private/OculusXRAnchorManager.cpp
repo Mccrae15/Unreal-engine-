@@ -1,10 +1,4 @@
-/*
-Copyright (c) Meta Platforms, Inc. and affiliates.
-All rights reserved.
-
-This source code is licensed under the license found in the
-LICENSE file in the root directory of this source tree.
-*/
+// Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include "OculusXRAnchorManager.h"
 
@@ -139,7 +133,7 @@ namespace OculusXRAnchors
 				//translate to BP types
 				const FOculusXRUInt64 RequestId(SetStatusEvent.requestId);
 				const FOculusXRUInt64 Space(SetStatusEvent.space);
-				EOculusXRSpaceComponentType BPSpaceComponentType = ConvertToUe4ComponentType(SetStatusEvent.componentType);
+				EOculusXRSpaceComponentType BPSpaceComponentType = ConvertToUEComponentType(SetStatusEvent.componentType);
 				const FOculusXRUUID BPUUID(SetStatusEvent.uuid.data);
 				const bool bEnabled = (SetStatusEvent.enabled == ovrpBool_True);
 
@@ -445,7 +439,7 @@ namespace OculusXRAnchors
 		OutSupportedTypes.SetNumZeroed(ovrComponentTypes.Num());
 		for (int i = 0; i < ovrComponentTypes.Num(); ++i)
 		{
-			OutSupportedTypes[i] = ConvertToUe4ComponentType(ovrComponentTypes[i]);
+			OutSupportedTypes[i] = ConvertToUEComponentType(ovrComponentTypes[i]);
 		}
 
 		return static_cast<EOculusXRAnchorResult::Type>(enumerateResult);
@@ -817,5 +811,6 @@ namespace OculusXRAnchors
 
 		return EOculusXRAnchorResult::Success;
 	}
+
 
 } // namespace OculusXRAnchors

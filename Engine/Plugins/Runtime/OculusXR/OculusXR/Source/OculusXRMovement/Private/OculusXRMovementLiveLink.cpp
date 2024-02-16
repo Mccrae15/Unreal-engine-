@@ -1,3 +1,5 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+
 #include "OculusXRMovementLiveLink.h"
 
 #include "IHeadMountedDisplayModule.h"

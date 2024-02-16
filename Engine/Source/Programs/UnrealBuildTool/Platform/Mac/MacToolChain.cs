@@ -538,7 +538,7 @@ namespace UnrealBuildTool
 				LipoAction.CommandPath = FileReference.Combine(Info.Clang.Directory, "lipo");
 				LipoAction.CommandDescription = (bBuildImportLibraryOnly ? "LipoStub" : "Lipo");
 				LipoAction.CommandVersion = Info.ClangVersionString;
-				LipoAction.CommandArguments = String.Join(" ", PerArchOutputFiles) + $" -create -output {OutputFileItem.AbsolutePath}";
+				LipoAction.CommandArguments = String.Join(" ", PerArchOutputFiles.Select(x => $"\"{x}\"")) + $" -create -output \"{OutputFileItem.AbsolutePath}\"";
 				LipoAction.StatusDescription = Path.GetFileName(OutputFileItem.AbsolutePath);
 				LipoAction.bCanExecuteRemotely = false;
 			}
@@ -1210,11 +1210,15 @@ namespace UnrealBuildTool
 				return OutputFiles;
 			}
 
-			if (BinaryLinkEnvironment.BundleDirectory != null)
+			// modern handle bundles via xcode
+			if (!bUseModernXcode)
 			{
-				foreach (UEBuildBundleResource Resource in BinaryLinkEnvironment.AdditionalBundleResources)
+				if (BinaryLinkEnvironment.BundleDirectory != null)
 				{
-					OutputFiles.Add(CopyBundleResource(Resource, Executable, BinaryLinkEnvironment.BundleDirectory, Graph));
+					foreach (UEBuildBundleResource Resource in BinaryLinkEnvironment.AdditionalBundleResources)
+					{
+						OutputFiles.Add(CopyBundleResource(Resource, Executable, BinaryLinkEnvironment.BundleDirectory, Graph));
+					}
 				}
 			}
 

@@ -79,7 +79,7 @@ void AMRUKAnchorActorSpawner::SpawnInterior()
 		RandomStream.GenerateNewSeed();
 	}
 	LastSeed = RandomStream.GetCurrentSeed();
-	InteriorActors = Subsystem->SpawnInteriorFromStream(SpawnGroups, RandomStream, ProceduralMaterial);
+	InteriorActors = Subsystem->SpawnInteriorFromStream(SpawnGroups, RandomStream, ProceduralMaterial, ShouldFallbackToProcedural);
 
 	OnActorsSpawned.Broadcast();
 }

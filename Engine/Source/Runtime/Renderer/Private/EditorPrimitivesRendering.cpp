@@ -77,6 +77,9 @@ bool FEditorPrimitivesBasePassMeshProcessor::ProcessDeferredShadingPath(const FM
 		Material,
 		VertexFactory->GetType(),
 		NoLightmapPolicy,
+		// BEGIN META SECTION - XR Soft Occlusions
+		false,
+		// END META SECTION - XR Soft Occlusions
 		FeatureLevel,
 		bRenderSkylight,
 		false,

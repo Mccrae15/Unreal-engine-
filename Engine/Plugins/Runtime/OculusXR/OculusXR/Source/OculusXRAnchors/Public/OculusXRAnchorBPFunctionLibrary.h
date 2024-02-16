@@ -1,10 +1,4 @@
-/*
-Copyright (c) Meta Platforms, Inc. and affiliates.
-All rights reserved.
-
-This source code is licensed under the license found in the
-LICENSE file in the root directory of this source tree.
-*/
+// Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #pragma once
 
@@ -55,4 +49,5 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "OculusXR|SpatialAnchor")
 	static bool GetRoomLayout(FOculusXRUInt64 Space, FOculusXRRoomLayout& RoomLayoutOut, int32 MaxWallsCapacity = 64);
+
 };

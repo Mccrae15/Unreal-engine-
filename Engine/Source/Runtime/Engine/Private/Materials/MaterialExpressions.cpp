@@ -23393,7 +23393,7 @@ int32 UMaterialExpressionStrataLegacyConversion::Compile(class FMaterialCompiler
 
 void UMaterialExpressionStrataLegacyConversion::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
 {
-	if (GraphNode)
+	if (GraphNode && PropertyChangedEvent.Property != nullptr)
 	{
 		GraphNode->ReconstructNode();
 	}

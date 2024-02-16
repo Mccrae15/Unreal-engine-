@@ -876,10 +876,10 @@ class URendererSettings : public UDeveloperSettings
 
 	// BEGIN META SECTION - XR Soft Occlusions
 	UPROPERTY(config, EditAnywhere, Category = VR, meta = (
-		ConsoleVariable = "r.Mobile.XRSoftOcclusionsPermutation", DisplayName = "Support Mobile XR Soft Occlusions",
+		ConsoleVariable = "r.XRSoftOcclusionsPermutation", DisplayName = "Support XR Soft Occlusions",
 		ToolTip = "Enable this to compile the shader variations needed to enable mixed reality passthrough soft occlusions at runtime.",
 		ConfigRestartRequired = true))
-		uint32 bMobileSupportsXRSoftOcclusions : 1;
+		uint32 bSupportsXRSoftOcclusions : 1;
 	// END META SECTION - XR Soft Occlusions
 
 	UPROPERTY(config, EditAnywhere, Category = "Mesh Streaming", meta = (

@@ -120,8 +120,8 @@ struct MRUTILITYKIT_API FMRUKLabelFilter
 
 	/**
 	 * Check if the labels pass the given label filter
-	 * @Param Labels The labels to check.
-	 * @Return Whether the filter passes or not.
+	 * @param Labels The labels to check.
+	 * @return Whether the filter passes or not.
 	 */
 	bool PassesFilter(const TArray<FString>& Labels) const;
 };
@@ -200,6 +200,17 @@ struct MRUTILITYKIT_API FMRUKSpawnActor
 	EMRUKSpawnerScalingMode ScalingMode;
 };
 
+UENUM(BlueprintType)
+enum class EMRUKFallbackToProceduralOverwrite
+{
+	/// Don't override the fallback to procedural standard behaviour.
+	Default,
+	/// Fallback to a procedural mesh.
+	Fallback,
+	/// Don't fallback to a procedural mesh.
+	NoFallback,
+};
+
 USTRUCT(BlueprintType)
 struct MRUTILITYKIT_API FMRUKSpawnGroup
 {
@@ -219,10 +230,12 @@ struct MRUTILITYKIT_API FMRUKSpawnGroup
 	EMRUKSpawnerSelectionMode SelectionMode = EMRUKSpawnerSelectionMode::Random;
 
 	/**
-	 * If an actor is not specified then fallback to using a procedural mesh instead.
+	 * Control if there should happen a fallback to spawning a procedural mesh
+	 * in case no actor class has been specified for this label. The global
+	 * fallback behaviour can be specified in the AMRUKAnchorActorSpawner.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "MR Utility Kit")
-	bool FallbackToProcedural = true;
+	EMRUKFallbackToProceduralOverwrite FallbackToProcedural;
 };
 
 /**

@@ -13,6 +13,7 @@ LICENSE file in the root directory of this source tree.
 #include "ProceduralMeshComponent.h"
 #include "VectorUtil.h"
 #include "Engine/World.h"
+#include "Engine/GameInstance.h"
 #include "Engine/Engine.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"

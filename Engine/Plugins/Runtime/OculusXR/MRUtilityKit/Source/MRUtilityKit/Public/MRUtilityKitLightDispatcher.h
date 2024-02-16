@@ -52,7 +52,7 @@ public:
 	/**
 	 * Add a actor to the AdditionalActorsToLookForPointLightComponents list.
 	 * This should be used during runtime instead of adding actors directly to AdditionalActorsToLookForPointLightComponents.
-	 * @Param Actor Actor to add to AdditionalActorsToLookForPointLightComponents.
+	 * @param Actor Actor to add to AdditionalActorsToLookForPointLightComponents.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "MR Utility Kit")
 	void AddAdditionalPointLightActor(AActor* Actor);

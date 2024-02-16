@@ -1402,11 +1402,11 @@ void FScene::SetEnableXRPassthroughSoftOcclusions(bool bEnable)
 {
 	if (bEnable)
 	{
-		static auto* MobileXRSoftOcclusionsPermutationCVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Mobile.XRSoftOcclusionsPermutation"));
-		const int32 MobileSoftOcclusionsPermutation = MobileXRSoftOcclusionsPermutationCVar->GetValueOnAnyThread();
-		if (MobileSoftOcclusionsPermutation == 0)
+		static auto* XRSoftOcclusionsPermutationCVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.XRSoftOcclusionsPermutation"));
+		const int32 SoftOcclusionsPermutation = XRSoftOcclusionsPermutationCVar->GetValueOnAnyThread();
+		if (SoftOcclusionsPermutation == 0)
 		{
-			ensureMsgf(false, TEXT("In order to enable soft occlusions 'Support Mobile Soft Occlusions' must be enabled in the project settings."));
+			ensureMsgf(false, TEXT("In order to enable soft occlusions 'Support Soft Occlusions' must be enabled in the project settings."));
 			return;
 		}
 	}
@@ -4606,7 +4606,9 @@ void FScene::GetEarlyZPassMode(ERHIFeatureLevel::Type InFeatureLevel, EDepthDraw
 
 				switch (CVarValue)
 				{
-				case 0: OutZPassMode = DDM_None; break;
+				// BEGIN META SECTION - XR Soft Occlusions
+				case 0: OutZPassMode = DDM_None; return;
+				// END META SECTION - XR Soft Occlusions
 				case 1: OutZPassMode = DDM_NonMaskedOnly; break;
 				case 2: OutZPassMode = DDM_AllOccluders; break;
 				case 3: break;	// Note: 3 indicates "default behavior" and does not specify an override
@@ -6315,6 +6317,15 @@ void FScene::UpdateAllPrimitiveSceneInfos(FRDGBuilder& GraphBuilder, EUpdateAllP
 		{
 			FPrimitiveSceneInfo* PrimitiveSceneInfo = Primitives[PrimitiveIndex];
 			PrimitivesNeedingStaticMeshUpdate[PrimitiveSceneInfo->PackedIndex] = true;
+
+			// HACK: Update Nanite primitives that need re-caching in GPU Scene
+			// TODO: Should be able to remove this after the move to compute materials.
+			if (bScenesPrimitivesNeedStaticMeshElementUpdate &&
+				PrimitiveSceneInfo->Proxy &&
+				PrimitiveSceneInfo->Proxy->IsNaniteMesh())
+			{
+				GPUScene.AddPrimitiveToUpdate(PrimitiveSceneInfo->GetIndex(), EPrimitiveDirtyState::ChangedOther);
+			}
 		}
 
 		bScenesPrimitivesNeedStaticMeshElementUpdate = false;

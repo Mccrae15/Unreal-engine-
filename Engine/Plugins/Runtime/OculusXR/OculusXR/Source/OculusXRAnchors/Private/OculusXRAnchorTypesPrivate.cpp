@@ -1,10 +1,4 @@
-/*
-Copyright (c) Meta Platforms, Inc. and affiliates.
-All rights reserved.
-
-This source code is licensed under the license found in the
-LICENSE file in the root directory of this source tree.
-*/
+// Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include "OculusXRAnchorTypesPrivate.h"
 
@@ -46,40 +40,40 @@ ovrpSpaceComponentType ConvertToOvrpComponentType(const EOculusXRSpaceComponentT
 	return ovrpType;
 }
 
-EOculusXRSpaceComponentType ConvertToUe4ComponentType(const ovrpSpaceComponentType ComponentType)
+EOculusXRSpaceComponentType ConvertToUEComponentType(const ovrpSpaceComponentType ComponentType)
 {
-	EOculusXRSpaceComponentType ue4ComponentType = EOculusXRSpaceComponentType::Undefined;
+	EOculusXRSpaceComponentType ueComponentType = EOculusXRSpaceComponentType::Undefined;
 	switch (ComponentType)
 	{
 		case ovrpSpaceComponentType_Locatable:
-			ue4ComponentType = EOculusXRSpaceComponentType::Locatable;
+			ueComponentType = EOculusXRSpaceComponentType::Locatable;
 			break;
 		case ovrpSpaceComponentType_Sharable:
-			ue4ComponentType = EOculusXRSpaceComponentType::Sharable;
+			ueComponentType = EOculusXRSpaceComponentType::Sharable;
 			break;
 		case ovrpSpaceComponentType_Storable:
-			ue4ComponentType = EOculusXRSpaceComponentType::Storable;
+			ueComponentType = EOculusXRSpaceComponentType::Storable;
 			break;
 		case ovrpSpaceComponentType_Bounded2D:
-			ue4ComponentType = EOculusXRSpaceComponentType::ScenePlane;
+			ueComponentType = EOculusXRSpaceComponentType::ScenePlane;
 			break;
 		case ovrpSpaceComponentType_Bounded3D:
-			ue4ComponentType = EOculusXRSpaceComponentType::SceneVolume;
+			ueComponentType = EOculusXRSpaceComponentType::SceneVolume;
 			break;
 		case ovrpSpaceComponentType_SemanticLabels:
-			ue4ComponentType = EOculusXRSpaceComponentType::SemanticClassification;
+			ueComponentType = EOculusXRSpaceComponentType::SemanticClassification;
 			break;
 		case ovrpSpaceComponentType_RoomLayout:
-			ue4ComponentType = EOculusXRSpaceComponentType::RoomLayout;
+			ueComponentType = EOculusXRSpaceComponentType::RoomLayout;
 			break;
 		case ovrpSpaceComponentType_SpaceContainer:
-			ue4ComponentType = EOculusXRSpaceComponentType::SpaceContainer;
+			ueComponentType = EOculusXRSpaceComponentType::SpaceContainer;
 			break;
 		case ovrpSpaceComponentType_TriangleMesh:
-			ue4ComponentType = EOculusXRSpaceComponentType::TriangleMesh;
+			ueComponentType = EOculusXRSpaceComponentType::TriangleMesh;
 			break;
 		default:;
 	}
 
-	return ue4ComponentType;
+	return ueComponentType;
 }

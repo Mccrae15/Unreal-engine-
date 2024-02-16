@@ -1,3 +1,4 @@
+// @lint-ignore-every LICENSELINT
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 using UnrealBuildTool;
@@ -26,6 +27,7 @@ public class OculusXREditor : ModuleRules
 				"OculusXRMovement",
 				"OculusXRPassthrough",
 				"OVRPluginXR",
+				"OculusXRProjectSetupTool",
 				"HTTP",
 				"DesktopPlatform",
 				"LauncherServices",
@@ -39,12 +41,13 @@ public class OculusXREditor : ModuleRules
 				new string[] {
 					// Relative to Engine\Plugins\Runtime\Oculus\OculusVR\Source
 					"OculusXREditor/Private",
-					"OculusXRHMD/Private",
+					"OculusXRHMD/Private"
 				});
 
 		PrivateIncludePathModuleNames.AddRange(
 			new string[] {
 				"Settings",
+				"OculusXRProjectSetupTool"
 			}
 			);
 	}

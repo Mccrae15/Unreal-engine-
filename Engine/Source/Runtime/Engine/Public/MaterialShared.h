@@ -1989,6 +1989,7 @@ public:
 	virtual bool HasRenderTracePhysicalMaterialOutputs() const { return false; }
 	// BEGIN META SECTION - XR Soft Occlusions
 	virtual bool IsXRSoftOcclusionsEnabled() const { return false; }
+	virtual float GetXRSoftOcclusionsDepthBias() const { return 0.0f; }
 	// END META SECTION - XR Soft Occlusions
 	virtual EMaterialShadingRate GetShadingRate() const { return MSR_1x1; }
 	/**
@@ -2717,6 +2718,7 @@ public:
 	ENGINE_API virtual bool HasRenderTracePhysicalMaterialOutputs() const override;
 	// BEGIN META SECTION - XR Soft Occlusions
 	ENGINE_API virtual bool IsXRSoftOcclusionsEnabled() const override;
+	ENGINE_API virtual float GetXRSoftOcclusionsDepthBias() const override;
 	// END META SECTION - XR Soft Occlusions
 	ENGINE_API virtual UMaterialInterface* GetMaterialInterface() const override;
 	/**

@@ -1,10 +1,5 @@
-/*
-Copyright (c) Meta Platforms, Inc. and affiliates.
-All rights reserved.
+// Copyright (c) Meta Platforms, Inc. and affiliates.
 
-This source code is licensed under the license found in the
-LICENSE file in the root directory of this source tree.
-*/
 #pragma once
 
 #include "CoreMinimal.h"
@@ -31,6 +26,7 @@ namespace OculusXRAnchors
 		static EOculusXRAnchorResult::Type GetSpaceSemanticClassification(uint64 Space, TArray<FString>& OutSemanticClassification);
 		static EOculusXRAnchorResult::Type GetSpaceContainer(uint64 Space, TArray<FOculusXRUUID>& OutContainerUuids);
 		static EOculusXRAnchorResult::Type GetSpaceBoundary2D(uint64 Space, TArray<FVector2f>& OutVertices);
+
 
 		static void OnPollEvent(ovrpEventDataBuffer* EventDataBuffer, bool& EventPollResult);
 	};

@@ -2101,6 +2101,11 @@ bool FMaterialResource::IsXRSoftOcclusionsEnabled() const
 {
 	return Material->bXRSoftOcclusions;
 }
+
+float FMaterialResource::GetXRSoftOcclusionsDepthBias() const
+{
+	return Material->XRSoftOcclusionsDepthBias;
+}
 // END META SECTION - XR Soft Occlusions
 
 UMaterialInterface* FMaterialResource::GetMaterialInterface() const 

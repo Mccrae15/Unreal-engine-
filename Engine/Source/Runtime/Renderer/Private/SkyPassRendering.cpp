@@ -77,6 +77,9 @@ bool FSkyPassMeshProcessor::Process(
 			MaterialResource,
 			VertexFactory->GetType(),
 			NoLightmapPolicy,
+			// BEGIN META SECTION - XR Soft Occlusions
+			false,
+			// END META SECTION - XR Soft Occlusions
 			FeatureLevel,
 			bRenderSkylight,
 			false,
@@ -191,6 +194,9 @@ void FSkyPassMeshProcessor::CollectPSOInitializers(const FSceneTexturesConfig& S
 		Material,
 		VertexFactoryData.VertexFactoryType,
 		NoLightmapPolicy,
+		// BEGIN META SECTION - XR Soft Occlusions
+		false,
+		// END META SECTION - XR Soft Occlusions
 		FeatureLevel,
 		bRenderSkylight,
 		false,

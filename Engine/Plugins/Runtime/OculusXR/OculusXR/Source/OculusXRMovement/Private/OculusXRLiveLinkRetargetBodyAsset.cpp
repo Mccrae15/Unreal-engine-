@@ -1,9 +1,4 @@
-/*
-Copyright (c) Meta Platforms, Inc. and affiliates.
-All rights reserved.
-This source code is licensed under the license found in the
-LICENSE file in the root directory of this source tree.
-*/
+// Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include "OculusXRLiveLinkRetargetBodyAsset.h"
 
@@ -101,15 +96,31 @@ void UOculusXRLiveLinkRetargetBodyAsset::BuildPoseFromAnimationData(float DeltaT
 
 			switch (RetargetingMode)
 			{
+				case EOculusXRRetargetingMode::Rotations:
+					BoneTransform.SetLocation(MeshPoses.GetComponentSpaceTransform(BoneIndex).GetLocation());
+					MeshPoses.SetComponentSpaceTransform(BoneIndex, BoneTransform);
+					break;
+
 				case EOculusXRRetargetingMode::RotationsPlusRoot:
 					if (BoneId != static_cast<uint8>(EOculusXRBoneID::BodyRoot))
 					{
-						case EOculusXRRetargetingMode::Rotations:
-							BoneTransform.SetLocation(MeshPoses.GetComponentSpaceTransform(BoneIndex).GetLocation());
+						BoneTransform.SetLocation(MeshPoses.GetComponentSpaceTransform(BoneIndex).GetLocation());
 					}
+					MeshPoses.SetComponentSpaceTransform(BoneIndex, BoneTransform);
+					break;
+
+				case EOculusXRRetargetingMode::RotationsPlusHips:
+					if (BoneId != static_cast<uint8>(EOculusXRBoneID::BodyHips))
+					{
+						BoneTransform.SetLocation(MeshPoses.GetComponentSpaceTransform(BoneIndex).GetLocation());
+					}
+					MeshPoses.SetComponentSpaceTransform(BoneIndex, BoneTransform);
+					break;
+
 				case EOculusXRRetargetingMode::Full:
 					MeshPoses.SetComponentSpaceTransform(BoneIndex, BoneTransform);
 					break;
+
 				case EOculusXRRetargetingMode::None:
 				default:
 					break;

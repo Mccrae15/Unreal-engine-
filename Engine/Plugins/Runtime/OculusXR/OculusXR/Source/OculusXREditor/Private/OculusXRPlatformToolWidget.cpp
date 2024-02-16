@@ -1,3 +1,4 @@
+// @lint-ignore-every LICENSELINT
 // Copyright Epic Games, Inc. All Rights Reserved.
 #include "OculusXRPlatformToolWidget.h"
 #include "Widgets/Text/SRichTextBlock.h"
@@ -101,7 +102,7 @@ void SOculusPlatformToolWidget::Construct(const FArguments& InArgs)
 		}
 	}
 
-	FString ODHIconPath = IPluginManager::Get().FindPlugin(TEXT("OculusXR"))->GetBaseDir() / TEXT("Resources/odhIcon128.png");
+	FString ODHIconPath = IPluginManager::Get().FindPlugin(TEXT("OculusXR"))->GetBaseDir() / TEXT("Resources/Icon128.png");
 	const FName BrushName(*ODHIconPath);
 	FSlateApplication::Get().GetRenderer()->GenerateDynamicImageResource(BrushName);
 	ODHIconDynamicImageBrush = MakeShareable(new FSlateDynamicImageBrush(BrushName, FVector2D(60.0f, 60.0f)));

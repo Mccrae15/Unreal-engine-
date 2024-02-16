@@ -658,14 +658,11 @@ void FSceneTextures::InitializeViewFamily(FRDGBuilder& GraphBuilder, FViewFamily
 
 	// BEGIN META SECTION - XR Soft Occlusions
 	// Environment Depth
-	if (Config.ShadingPath == EShadingPath::Mobile)
+	FTextureRHIRef EnvironmentDepthRHI;
+	if (FindEnvironmentDepthTexture_RenderThread(EnvironmentDepthRHI, SceneTextures.DepthFactors, SceneTextures.ScreenToDepthMatrices, SceneTextures.DepthViewProjMatrices))
 	{
-		FTextureRHIRef EnvironmentDepthRHI;
-		if (FindEnvironmentDepthTexture_RenderThread(EnvironmentDepthRHI, SceneTextures.DepthFactors, SceneTextures.ScreenToDepthMatrices, SceneTextures.DepthViewProjMatrices))
-		{
-			auto &desc = EnvironmentDepthRHI->GetDesc();
-			SceneTextures.EnvironmentDepthTexture = RegisterExternalTexture(GraphBuilder, EnvironmentDepthRHI, TEXT("EnvironmentDepth"));
-		}
+		auto &desc = EnvironmentDepthRHI->GetDesc();
+		SceneTextures.EnvironmentDepthTexture = RegisterExternalTexture(GraphBuilder, EnvironmentDepthRHI, TEXT("EnvironmentDepth"));
 	}
 	// END META SECTION - XR Soft Occlusions
 

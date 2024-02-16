@@ -122,9 +122,10 @@ IMPLEMENT_STATIC_UNIFORM_BUFFER_STRUCT(FTranslucentBasePassUniformParameters, "T
 	typedef TBasePassVS< LightMapPolicyType > TBasePassVS##LightMapPolicyName ; \
 	IMPLEMENT_MATERIAL_SHADER_TYPE(template<>,TBasePassVS##LightMapPolicyName,TEXT("/Engine/Private/BasePassVertexShader.usf"),TEXT("Main"),SF_Vertex);
 
-#define IMPLEMENT_BASEPASS_PIXELSHADER_TYPE(LightMapPolicyType,LightMapPolicyName,bEnableSkyLight,SkyLightName,GBufferLayout,LayoutName) \
-	typedef TBasePassPS<LightMapPolicyType, bEnableSkyLight, GBufferLayout> TBasePassPS##LightMapPolicyName##SkyLightName##LayoutName; \
-	IMPLEMENT_MATERIAL_SHADER_TYPE(template<>,TBasePassPS##LightMapPolicyName##SkyLightName##LayoutName,TEXT("/Engine/Private/BasePassPixelShader.usf"),TEXT("MainPS"),SF_Pixel);
+// BEGIN META SECTION - XR Soft Occlusions
+#define IMPLEMENT_BASEPASS_PIXELSHADER_TYPE(LightMapPolicyType,LightMapPolicyName,bEnableSkyLight,SkyLightName,GBufferLayout,LayoutName,EnableXRSoftOcclusions,XRSoftOcclusionsName) \
+	typedef TBasePassPS<LightMapPolicyType, bEnableSkyLight, GBufferLayout, EnableXRSoftOcclusions> TBasePassPS##LightMapPolicyName##SkyLightName##LayoutName##XRSoftOcclusionsName; \
+	IMPLEMENT_MATERIAL_SHADER_TYPE(template<>,TBasePassPS##LightMapPolicyName##SkyLightName##LayoutName##XRSoftOcclusionsName,TEXT("/Engine/Private/BasePassPixelShader.usf"),TEXT("MainPS"),SF_Pixel);
 
 #define IMPLEMENT_BASEPASS_COMPUTESHADER_TYPE(LightMapPolicyType,LightMapPolicyName,bEnableSkyLight,SkyLightName,GBufferLayout,LayoutName) \
 	typedef TBasePassCS<LightMapPolicyType, bEnableSkyLight, GBufferLayout> TBasePassCS##LightMapPolicyName##SkyLightName##LayoutName; \
@@ -133,14 +134,19 @@ IMPLEMENT_STATIC_UNIFORM_BUFFER_STRUCT(FTranslucentBasePassUniformParameters, "T
 // Implement a pixel and compute shader type for skylights and one without, and one vertex shader that will be shared between them
 #define IMPLEMENT_BASEPASS_LIGHTMAPPED_SHADER_TYPE(LightMapPolicyType,LightMapPolicyName) \
 	IMPLEMENT_BASEPASS_VERTEXSHADER_TYPE(LightMapPolicyType,LightMapPolicyName) \
-	IMPLEMENT_BASEPASS_PIXELSHADER_TYPE(LightMapPolicyType,LightMapPolicyName,true,Skylight,GBL_Default,) \
-	IMPLEMENT_BASEPASS_PIXELSHADER_TYPE(LightMapPolicyType,LightMapPolicyName,false,,GBL_Default,) \
-	IMPLEMENT_BASEPASS_PIXELSHADER_TYPE(LightMapPolicyType,LightMapPolicyName,true,Skylight,GBL_ForceVelocity,ForceVelocity) \
-	IMPLEMENT_BASEPASS_PIXELSHADER_TYPE(LightMapPolicyType,LightMapPolicyName,false,,GBL_ForceVelocity,ForceVelocity) \
+	IMPLEMENT_BASEPASS_PIXELSHADER_TYPE(LightMapPolicyType,LightMapPolicyName,true,Skylight,GBL_Default,,true,XRSoftOcclusions) \
+	IMPLEMENT_BASEPASS_PIXELSHADER_TYPE(LightMapPolicyType,LightMapPolicyName,false,,GBL_Default,,true,XRSoftOcclusions) \
+	IMPLEMENT_BASEPASS_PIXELSHADER_TYPE(LightMapPolicyType,LightMapPolicyName,true,Skylight,GBL_ForceVelocity,ForceVelocity,true,XRSoftOcclusions) \
+	IMPLEMENT_BASEPASS_PIXELSHADER_TYPE(LightMapPolicyType,LightMapPolicyName,false,,GBL_ForceVelocity,ForceVelocity,true,XRSoftOcclusions) \
+	IMPLEMENT_BASEPASS_PIXELSHADER_TYPE(LightMapPolicyType,LightMapPolicyName,true,Skylight,GBL_Default,,false,) \
+	IMPLEMENT_BASEPASS_PIXELSHADER_TYPE(LightMapPolicyType,LightMapPolicyName,false,,GBL_Default,,false,) \
+	IMPLEMENT_BASEPASS_PIXELSHADER_TYPE(LightMapPolicyType,LightMapPolicyName,true,Skylight,GBL_ForceVelocity,ForceVelocity,false,) \
+	IMPLEMENT_BASEPASS_PIXELSHADER_TYPE(LightMapPolicyType,LightMapPolicyName,false,,GBL_ForceVelocity,ForceVelocity,false,) \
 	IMPLEMENT_BASEPASS_COMPUTESHADER_TYPE(LightMapPolicyType,LightMapPolicyName,true,Skylight,GBL_Default,) \
 	IMPLEMENT_BASEPASS_COMPUTESHADER_TYPE(LightMapPolicyType,LightMapPolicyName,false,,GBL_Default,) \
 	IMPLEMENT_BASEPASS_COMPUTESHADER_TYPE(LightMapPolicyType,LightMapPolicyName,true,Skylight,GBL_ForceVelocity,ForceVelocity) \
 	IMPLEMENT_BASEPASS_COMPUTESHADER_TYPE(LightMapPolicyType,LightMapPolicyName,false,,GBL_ForceVelocity,ForceVelocity)
+// END META SECTION - XR Soft Occlusions
 
 // Implement shader types per lightmap policy
 // If renaming or refactoring these, remember to update FMaterialResource::GetRepresentativeInstructionCounts and FPreviewMaterial::ShouldCache().
@@ -158,7 +164,9 @@ IMPLEMENT_BASEPASS_LIGHTMAPPED_SHADER_TYPE( TUniformLightMapPolicy<LMP_DISTANCE_
 
 F128BitRTBasePassPS::F128BitRTBasePassPS() = default;
 F128BitRTBasePassPS::F128BitRTBasePassPS(const ShaderMetaType::CompiledShaderInitializerType& Initializer) :
-	TBasePassPS<TUniformLightMapPolicy<LMP_NO_LIGHTMAP>, false, GBL_Default>(Initializer)
+	// BEGIN META SECTION - XR Soft Occlusions
+	TBasePassPS<TUniformLightMapPolicy<LMP_NO_LIGHTMAP>, false, GBL_Default, false>(Initializer)
+	// END META SECTION - XR Soft Occlusions
 {}
 
 bool F128BitRTBasePassPS::ShouldCompilePermutation(const FMeshMaterialShaderPermutationParameters& Parameters)
@@ -510,11 +518,22 @@ void SetupBasePassState(FExclusiveDepthStencil::Type BasePassDepthStencilAccess,
 }
 
 template <ELightMapPolicyType Policy, EGBufferLayout GBufferLayout>
-void AddUniformBasePassPixelShader(bool bEnableSkyLight, bool bUse128bitRT, FMaterialShaderTypes& OutShaderTypes)
+// BEGIN META SECTION - XR Soft Occlusions
+void AddUniformBasePassPixelShader(bool bEnableSkyLight, bool bUse128bitRT, FMaterialShaderTypes& OutShaderTypes, bool bEnableXRSoftOcclusions)
+// BEGIN META SECTION - XR Soft Occlusions
 {
 	if (bEnableSkyLight)
 	{
-		OutShaderTypes.AddShaderType<TBasePassPS<TUniformLightMapPolicy<Policy>, true, GBufferLayout>>();
+		// BEGIN META SECTION - XR Soft Occlusions
+		if (bEnableXRSoftOcclusions)
+		{
+			OutShaderTypes.AddShaderType<TBasePassPS<TUniformLightMapPolicy<Policy>, true, GBufferLayout, true>>();
+		}
+		else
+		{
+			OutShaderTypes.AddShaderType<TBasePassPS<TUniformLightMapPolicy<Policy>, true, GBufferLayout, false>>();
+		}
+		// BEGIN META SECTION - XR Soft Occlusions
 	}
 	else
 	{
@@ -524,7 +543,16 @@ void AddUniformBasePassPixelShader(bool bEnableSkyLight, bool bUse128bitRT, FMat
 		}
 		else
 		{
-			OutShaderTypes.AddShaderType<TBasePassPS<TUniformLightMapPolicy<Policy>, false, GBufferLayout>>();
+			// BEGIN META SECTION - XR Soft Occlusions
+			if (bEnableXRSoftOcclusions)
+			{
+				OutShaderTypes.AddShaderType<TBasePassPS<TUniformLightMapPolicy<Policy>, false, GBufferLayout, true>>();
+			}
+			else
+			{
+				OutShaderTypes.AddShaderType<TBasePassPS<TUniformLightMapPolicy<Policy>, false, GBufferLayout, false>>();
+			}
+			// BEGIN META SECTION - XR Soft Occlusions
 		}
 	}
 }
@@ -537,6 +565,9 @@ template <ELightMapPolicyType Policy>
 bool GetUniformBasePassShaders(
 	const FMaterial& Material,
 	const FVertexFactoryType* VertexFactoryType,
+	// BEGIN META SECTION - XR Soft Occlusions
+	bool bEnableXRSoftOcclusions,
+	// END META SECTION - XR Soft Occlusions
 	ERHIFeatureLevel::Type FeatureLevel,
 	bool bEnableSkyLight,
 	bool bUse128bitRT,
@@ -555,12 +586,14 @@ bool GetUniformBasePassShaders(
 	{
 		switch (GBufferLayout)
 		{
+		// BEGIN META SECTION - XR Soft Occlusions
 		case GBL_Default:
-			AddUniformBasePassPixelShader<Policy, GBL_Default>(bEnableSkyLight, bUse128bitRT, ShaderTypes);
+			AddUniformBasePassPixelShader<Policy, GBL_Default>(bEnableSkyLight, bUse128bitRT, ShaderTypes, bEnableXRSoftOcclusions);
 			break;
 		case GBL_ForceVelocity:
-			AddUniformBasePassPixelShader<Policy, GBL_ForceVelocity>(bEnableSkyLight, bUse128bitRT, ShaderTypes);
+			AddUniformBasePassPixelShader<Policy, GBL_ForceVelocity>(bEnableSkyLight, bUse128bitRT, ShaderTypes, bEnableXRSoftOcclusions);
 			break;
+		// END META SECTION - XR Soft Occlusions
 		default:
 			check(false);
 			break;
@@ -583,6 +616,9 @@ bool GetBasePassShaders<FUniformLightMapPolicy>(
 	const FMaterial& Material, 
 	const FVertexFactoryType* VertexFactoryType, 
 	FUniformLightMapPolicy LightMapPolicy, 
+	// BEGIN META SECTION - XR Soft Occlusions
+	bool bEnableXRSoftOcclusions,
+	// END META SECTION - XR Soft Occlusions
 	ERHIFeatureLevel::Type FeatureLevel,
 	bool bEnableSkyLight,
     bool bUse128bitRT,
@@ -593,20 +629,22 @@ bool GetBasePassShaders<FUniformLightMapPolicy>(
 {
 	switch (LightMapPolicy.GetIndirectPolicy())
 	{
+	// BEGIN META SECTION - XR Soft Occlusions
 	case LMP_PRECOMPUTED_IRRADIANCE_VOLUME_INDIRECT_LIGHTING:
-		return GetUniformBasePassShaders<LMP_PRECOMPUTED_IRRADIANCE_VOLUME_INDIRECT_LIGHTING>(Material, VertexFactoryType, FeatureLevel, bEnableSkyLight, bUse128bitRT, GBufferLayout, VertexShader, PixelShader);
+		return GetUniformBasePassShaders<LMP_PRECOMPUTED_IRRADIANCE_VOLUME_INDIRECT_LIGHTING>(Material, VertexFactoryType, bEnableXRSoftOcclusions, FeatureLevel, bEnableSkyLight, bUse128bitRT, GBufferLayout, VertexShader, PixelShader);
 	case LMP_CACHED_VOLUME_INDIRECT_LIGHTING:
-		return GetUniformBasePassShaders<LMP_CACHED_VOLUME_INDIRECT_LIGHTING>(Material, VertexFactoryType, FeatureLevel, bEnableSkyLight, bUse128bitRT, GBufferLayout, VertexShader, PixelShader);
+		return GetUniformBasePassShaders<LMP_CACHED_VOLUME_INDIRECT_LIGHTING>(Material, VertexFactoryType, bEnableXRSoftOcclusions, FeatureLevel, bEnableSkyLight, bUse128bitRT, GBufferLayout, VertexShader, PixelShader);
 	case LMP_CACHED_POINT_INDIRECT_LIGHTING:
-		return GetUniformBasePassShaders<LMP_CACHED_POINT_INDIRECT_LIGHTING>(Material, VertexFactoryType, FeatureLevel, bEnableSkyLight, bUse128bitRT, GBufferLayout, VertexShader, PixelShader);
+		return GetUniformBasePassShaders<LMP_CACHED_POINT_INDIRECT_LIGHTING>(Material, VertexFactoryType, bEnableXRSoftOcclusions, FeatureLevel, bEnableSkyLight, bUse128bitRT, GBufferLayout, VertexShader, PixelShader);
 	case LMP_LQ_LIGHTMAP:
-		return GetUniformBasePassShaders<LMP_LQ_LIGHTMAP>(Material, VertexFactoryType, FeatureLevel, bEnableSkyLight, bUse128bitRT, GBufferLayout, VertexShader, PixelShader);
+		return GetUniformBasePassShaders<LMP_LQ_LIGHTMAP>(Material, VertexFactoryType, bEnableXRSoftOcclusions, FeatureLevel, bEnableSkyLight, bUse128bitRT, GBufferLayout, VertexShader, PixelShader);
 	case LMP_HQ_LIGHTMAP:
-		return GetUniformBasePassShaders<LMP_HQ_LIGHTMAP>(Material, VertexFactoryType, FeatureLevel, bEnableSkyLight, bUse128bitRT, GBufferLayout, VertexShader, PixelShader);
+		return GetUniformBasePassShaders<LMP_HQ_LIGHTMAP>(Material, VertexFactoryType, bEnableXRSoftOcclusions, FeatureLevel, bEnableSkyLight, bUse128bitRT, GBufferLayout, VertexShader, PixelShader);
 	case LMP_DISTANCE_FIELD_SHADOWS_AND_HQ_LIGHTMAP:
-		return GetUniformBasePassShaders<LMP_DISTANCE_FIELD_SHADOWS_AND_HQ_LIGHTMAP>(Material, VertexFactoryType, FeatureLevel, bEnableSkyLight, bUse128bitRT, GBufferLayout, VertexShader, PixelShader);
+		return GetUniformBasePassShaders<LMP_DISTANCE_FIELD_SHADOWS_AND_HQ_LIGHTMAP>(Material, VertexFactoryType, bEnableXRSoftOcclusions, FeatureLevel, bEnableSkyLight, bUse128bitRT, GBufferLayout, VertexShader, PixelShader);
 	case LMP_NO_LIGHTMAP:
-		return GetUniformBasePassShaders<LMP_NO_LIGHTMAP>(Material, VertexFactoryType, FeatureLevel, bEnableSkyLight, bUse128bitRT, GBufferLayout, VertexShader, PixelShader);
+		return GetUniformBasePassShaders<LMP_NO_LIGHTMAP>(Material, VertexFactoryType, bEnableXRSoftOcclusions, FeatureLevel, bEnableSkyLight, bUse128bitRT, GBufferLayout, VertexShader, PixelShader);
+	// END META SECTION - XR Soft Occlusions
 	default:
 		check(false);
 		return false;
@@ -728,6 +766,12 @@ void SetupSharedBasePassParameters(
 	// Skip base pass skylight if Lumen GI is enabled, as Lumen handles the skylight.
 	// Ideally we would choose a different shader permutation to skip skylight, but Lumen GI is only known per-view
 	SharedParameters.UseBasePassSkylight = bLumenGIEnabled ? 0 : 1;
+
+	// BEGIN META SECTION - XR Soft Occlusions
+	const FRDGSystemTextures& SystemTextures = FRDGSystemTextures::Get(GraphBuilder);
+	const FSceneTextures* SceneTextures = static_cast<const FViewFamilyInfo*>(View.Family)->GetSceneTexturesChecked();
+	SetupEnvironmentDepthUniformParameters(View, SystemTextures, SceneTextures, SharedParameters.EnvironmentDepthParameters);
+	// END META SECTION - XR Soft Occlusions
 }
 
 TRDGUniformBufferRef<FOpaqueBasePassUniformParameters> CreateOpaqueBasePassUniformBuffer(
@@ -1583,6 +1627,10 @@ void FBasePassMeshProcessor::CollectPSOInitializersForLMPolicy(
 	EPrimitiveType PrimitiveType, 
 	TArray<FPSOPrecacheData>& PSOInitializers)
 {
+	// BEGIN META SECTION - XR Soft Occlusions
+	bool bEnableXRSoftOcclusions = Scene && Scene->bEnableXRPassthroughSoftOcclusions && MaterialResource.IsXRSoftOcclusionsEnabled();
+	// END META SECTION - XR Soft Occlusions
+
 	// Get the shaders if possible for given vertex factory
 	TMeshProcessorShaders<
 		TBasePassVertexShaderPolicyParamType<LightMapPolicyType>,
@@ -1591,6 +1639,9 @@ void FBasePassMeshProcessor::CollectPSOInitializersForLMPolicy(
 		MaterialResource,
 		VertexFactoryData.VertexFactoryType,
 		LightMapPolicy,
+		// BEGIN META SECTION - XR Soft Occlusions
+		bEnableXRSoftOcclusions,
+		// END META SECTION - XR Soft Occlusions
 		FeatureLevel,
 		bRenderSkylight,
 		Get128BitRequirement(),
@@ -1696,6 +1747,10 @@ bool FBasePassMeshProcessor::Process(
 
 	const bool bRenderSkylight = Scene && Scene->ShouldRenderSkylightInBasePass(bIsTranslucent) && ShadingModels.IsLit();
 
+	// BEGIN META SECTION - XR Soft Occlusions
+	bool bEnableXRSoftOcclusions = Scene && Scene->bEnableXRPassthroughSoftOcclusions && MaterialResource.IsXRSoftOcclusionsEnabled();
+	// END META SECTION - XR Soft Occlusions
+
 	TMeshProcessorShaders<
 		TBasePassVertexShaderPolicyParamType<LightMapPolicyType>,
 		TBasePassPixelShaderPolicyParamType<LightMapPolicyType>> BasePassShaders;
@@ -1704,6 +1759,9 @@ bool FBasePassMeshProcessor::Process(
 		MaterialResource,
 		VertexFactory->GetType(),
 		LightMapPolicy,
+		// BEGIN META SECTION - XR Soft Occlusions
+		bEnableXRSoftOcclusions,
+		// END META SECTION - XR Soft Occlusions
 		FeatureLevel,
 		bRenderSkylight,
 		Get128BitRequirement(),

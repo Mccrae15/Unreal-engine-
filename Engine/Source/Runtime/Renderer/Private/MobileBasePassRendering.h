@@ -396,9 +396,9 @@ public:
 		}
 		
 		// BEGIN META SECTION - XR Soft Occlusions
-		static auto* MobileXRSoftOcclusionsPermutationCVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Mobile.XRSoftOcclusionsPermutation"));
-		const int32 MobileXRSoftOcclusionsPermutation = MobileXRSoftOcclusionsPermutationCVar->GetValueOnAnyThread();
-		if (bEnableXRSoftOcclusions && !MobileXRSoftOcclusionsPermutation)
+		static auto* XRSoftOcclusionsPermutationCVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.XRSoftOcclusionsPermutation"));
+		const int32 XRSoftOcclusionsPermutation = XRSoftOcclusionsPermutationCVar->GetValueOnAnyThread();
+		if (bEnableXRSoftOcclusions && !XRSoftOcclusionsPermutation)
 		{
 			return false;
 		}

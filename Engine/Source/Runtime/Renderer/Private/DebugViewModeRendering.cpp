@@ -447,7 +447,9 @@ void FDebugViewModeMeshProcessor::UpdateInstructionCount(FDebugViewModeShaderEle
 
 			FMaterialShaderTypes ShaderTypes;
 			ShaderTypes.AddShaderType<TBasePassVS<TUniformLightMapPolicy<LMP_NO_LIGHTMAP>>>();
-			ShaderTypes.AddShaderType<TBasePassPS<TUniformLightMapPolicy<LMP_NO_LIGHTMAP>, false, GBL_Default>>();
+			// BEGIN META SECTION - XR Soft Occlusions
+			ShaderTypes.AddShaderType<TBasePassPS<TUniformLightMapPolicy<LMP_NO_LIGHTMAP>, false, GBL_Default, false>>();
+			// END META SECTION - XR Soft Occlusions
 
 			FMaterialShaders Shaders;
 			if (InBatchMaterial->TryGetShaders(ShaderTypes, InVertexFactoryType, Shaders))

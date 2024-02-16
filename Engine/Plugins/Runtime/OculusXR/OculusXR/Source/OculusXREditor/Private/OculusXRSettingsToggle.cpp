@@ -1,4 +1,6 @@
-﻿// Copyright Epic Games, Inc. All Rights Reserved.
+﻿
+// @lint-ignore-every LICENSELINT
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "OculusXRSettingsToggle.h"
 

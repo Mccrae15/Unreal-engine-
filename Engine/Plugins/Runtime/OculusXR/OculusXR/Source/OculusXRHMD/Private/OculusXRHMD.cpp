@@ -1,3 +1,4 @@
+// @lint-ignore-every LICENSELINT
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "OculusXRHMD.h"
@@ -2927,8 +2928,8 @@ namespace OculusXRHMD
 		}
 		else
 		{
-			projection.M[2][2] = -handednessScale;
-			projection.M[2][3] = frustum.zNear;
+			projection.M[2][2] = handednessScale;
+			projection.M[2][3] = -frustum.zNear;
 		}
 
 		// Produces W result (= Z in)
@@ -4067,11 +4068,11 @@ namespace OculusXRHMD
 		ovrpFovf* ScreenFov = Frame_RenderThread->SymmetricFov;
 
 		ovrpEnvironmentDepthFrameDesc DepthFrameDesc[ovrpEye_Count];
-		if (FOculusXRHMDModule::GetPluginWrapper().GetEnvironmentDepthFrameDesc(ovrpEye_Left, &DepthFrameDesc[0]) != ovrpSuccess)
+		if (FOculusXRHMDModule::GetPluginWrapper().GetEnvironmentDepthFrameDesc(ovrpEye_Left, &DepthFrameDesc[0]) != ovrpSuccess || !DepthFrameDesc[0].IsValid)
 		{
 			return false;
 		}
-		if (FOculusXRHMDModule::GetPluginWrapper().GetEnvironmentDepthFrameDesc(ovrpEye_Right, &DepthFrameDesc[1]) != ovrpSuccess)
+		if (FOculusXRHMDModule::GetPluginWrapper().GetEnvironmentDepthFrameDesc(ovrpEye_Right, &DepthFrameDesc[1]) != ovrpSuccess || !DepthFrameDesc[1].IsValid)
 		{
 			return false;
 		}
@@ -4097,14 +4098,15 @@ namespace OculusXRHMD
 				auto DepthTranslation = ToFVector(DepthFrameDesc[i].CreatePose.Position) * WorldToMetersScale;
 
 				ovrpPoseStatef EyePoseState;
-				FOculusXRHMDModule::GetPluginWrapper().GetNodePoseState3(ovrpStep_Render, Frame_RenderThread->FrameNumber, (ovrpNode)i, &EyePoseState);
-				auto EyePos = ToFVector(EyePoseState.Pose.Position) * WorldToMetersScale;
+				if (IsMobilePlatform(Settings->CurrentShaderPlatform) && OVRP_SUCCESS(FOculusXRHMDModule::GetPluginWrapper().GetNodePoseState3(ovrpStep_Render, Frame_RenderThread->FrameNumber, (ovrpNode)i, &EyePoseState)))
+				{
+					auto EyePos = ToFVector(EyePoseState.Pose.Position) * WorldToMetersScale;
+					auto Delta = EyePos - DepthTranslation;
 
-				auto Delta = EyePos - DepthTranslation;
-
-				// NOTE: The view matrix here is relative to the VR camera, this is necessary to support
-				// Large Worlds and avoid rounding errors when getting very far away from the origin
-				ViewMatrix = ViewMatrix.ConcatTranslation(ViewMatrix.TransformPosition(Delta));
+					// NOTE: The view matrix here is relative to the VR camera, this is necessary to support
+					// Large Worlds and avoid rounding errors when getting very far away from the origin
+					ViewMatrix = ViewMatrix.ConcatTranslation(ViewMatrix.TransformPosition(Delta));
+				}
 
 				DepthViewProj[i] = (FMatrix44f)(ViewMatrix * DepthProjectionMatrix);
 			}
@@ -4747,6 +4749,7 @@ namespace OculusXRHMD
 		Settings->XrApi = HMDSettings->XrApi;
 		Settings->bSupportExperimentalFeatures = HMDSettings->bSupportExperimentalFeatures;
 		Settings->bSupportEyeTrackedFoveatedRendering = HMDSettings->bSupportEyeTrackedFoveatedRendering;
+		Settings->SystemSplashBackground = HMDSettings->SystemSplashBackground;
 
 
 		Settings->FaceTrackingDataSource.Empty(ovrpFaceConstants_FaceTrackingDataSourcesCount);

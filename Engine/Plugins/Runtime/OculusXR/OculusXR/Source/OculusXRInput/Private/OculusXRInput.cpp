@@ -1,3 +1,4 @@
+// @lint-ignore-every LICENSELINT
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "OculusXRInput.h"
@@ -30,6 +31,12 @@ static TAutoConsoleVariable<int32> CVarOculusControllerPose(
 		TEXT("1 Legacy controller pose.\n")
 			TEXT("2 Grip controller pose.\n")
 				TEXT("3 Aim controller pose.\n"),
+	ECVF_Scalability | ECVF_RenderThreadSafe);
+
+static TAutoConsoleVariable<int32> CVarOculusResetUntrackedInputStates(
+	TEXT("r.Mobile.Oculus.ResetUntrackedInputStates"),
+	0,
+	TEXT("If true, reset input states of input devices if they are untracked (for example, controllers or hands after Oculus button is held to pause the app).\n"),
 	ECVF_Scalability | ECVF_RenderThreadSafe);
 
 namespace OculusXRInput
@@ -712,9 +719,18 @@ namespace OculusXRInput
 							}
 							else
 							{
-								// Controller isn't available right now.  Zero out input state, so that if it comes back it will send fresh event deltas
-								State = FOculusTouchControllerState((EControllerHand)HandIndex);
-								UE_CLOG(OVR_DEBUG_LOGGING, LogOcInput, Log, TEXT("SendControllerEvents: Controller for the hand %d is not tracked"), int(HandIndex));
+								// Controller isn't available right now.
+								if (CVarOculusResetUntrackedInputStates.GetValueOnAnyThread())
+								{
+									//Zero out input state, so that if controller comes back it will send fresh event deltas
+									State = FOculusTouchControllerState((EControllerHand)HandIndex);
+									UE_CLOG(OVR_DEBUG_LOGGING, LogOcInput, Log, TEXT("SendControllerEvents: Controller for the hand %d is not tracked and input states are reset"), int(HandIndex));
+								}
+								else
+								{
+									//Cache input state, so that if controller comes back it will send event deltas
+									UE_CLOG(OVR_DEBUG_LOGGING, LogOcInput, Log, TEXT("SendControllerEvents: Controller for the hand %d is not tracked and input states are saved"), int(HandIndex));
+								}
 							}
 						}
 					}
@@ -857,8 +873,18 @@ namespace OculusXRInput
 							}
 							else
 							{
-								State = FOculusHandControllerState((EControllerHand)HandIndex);
-								UE_CLOG(OVR_DEBUG_LOGGING, LogOcInput, Log, TEXT("SendControllerEvents: Hand for the hand %d is not tracked"), int32(HandIndex));
+								// Hand isn't available right now.
+								if (CVarOculusResetUntrackedInputStates.GetValueOnAnyThread())
+								{
+									//Zero out input state, so that if hand comes back it will send fresh event deltas
+									State = FOculusHandControllerState((EControllerHand)HandIndex);
+									UE_CLOG(OVR_DEBUG_LOGGING, LogOcInput, Log, TEXT("SendControllerEvents: Hand for the hand %d is not tracked and input states are reset"), int32(HandIndex));
+								}
+								else
+								{
+									//Cache input state, so that if hand comes back it will send event deltas
+									UE_CLOG(OVR_DEBUG_LOGGING, LogOcInput, Log, TEXT("SendControllerEvents: Hand for the hand %d is not tracked and input states are saved"), int(HandIndex));
+								}
 							}
 						}
 					}
@@ -1584,7 +1610,7 @@ namespace OculusXRInput
 		{
 			float Amplitude = ((uint8_t*)Samples)[i] / 255.0f;
 			Amplitude = FMath::Min(1.0f, Amplitude);
-			Amplitude = FMath::Max(0.0f, Amplitude);
+			Amplitude = FMath::Max((bPCM ? -1.f : 0.0f), Amplitude);
 			BufferToSend[i] = Amplitude;
 			UE_CLOG(OVR_HAP_LOGGING, LogOcInput, Log, TEXT("amplitude, %.3f"), Amplitude);
 		}

@@ -1,3 +1,4 @@
+// @lint-ignore-every LICENSELINT
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "OculusXRHMD_Layer.h"
@@ -1271,7 +1272,10 @@ namespace OculusXRHMD
 			ovrpXrApi NativeXrApi;
 			if (OVRP_SUCCESS(FOculusXRHMDModule::GetPluginWrapper().GetNativeXrApiType(&NativeXrApi)) && (NativeXrApi == ovrpXrApi_OpenXR))
 			{
-				if (LayerIndex == 0)
+
+				const bool bShouldIgnoreSrcAlpha = (LayerIndex == 0 && Settings->SystemSplashBackground == ESystemSplashBackgroundType::Black);
+
+				if (bShouldIgnoreSrcAlpha)
 				{
 					OvrpLayerSubmit.LayerSubmitFlags |= ovrpLayerSubmitFlag_IgnoreSourceAlpha;
 				}

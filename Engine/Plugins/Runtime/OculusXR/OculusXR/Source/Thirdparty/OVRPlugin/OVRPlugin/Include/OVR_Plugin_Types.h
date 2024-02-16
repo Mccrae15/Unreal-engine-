@@ -29,7 +29,7 @@
 // Note: OVRP_MINOR_VERSION == OCULUS_SDK_VERSION + 32
 
 #define OVRP_MAJOR_VERSION 1
-#define OVRP_MINOR_VERSION 92
+#define OVRP_MINOR_VERSION 94
 #define OVRP_PATCH_VERSION 0
 
 #define OVRP_VERSION OVRP_MAJOR_VERSION, OVRP_MINOR_VERSION, OVRP_PATCH_VERSION
@@ -152,6 +152,17 @@ typedef enum {
   ovrpFailure_SpaceLocalizationFailed = -2002,
   ovrpFailure_SpaceNetworkTimeout = -2003,
   ovrpFailure_SpaceNetworkRequestFailed = -2004,
+
+  /// XR_FB_spatial_entity extension
+  ovrpFailure_SpaceComponentNotSupported = -2005,
+  ovrpFailure_SpaceComponentNotEnabled = -2006,
+  ovrpFailure_SpaceComponentStatusPending = -2007,
+  ovrpFailure_SpaceComponentStatusAlreadySet = -2008,
+
+
+
+
+
 
 
 
@@ -1226,6 +1237,7 @@ typedef OVRP_LAYER_DESC ovrpLayerDesc;
 typedef OVRP_LAYER_DESC_TYPE ovrpLayerDesc_Quad;
 typedef OVRP_LAYER_DESC_TYPE ovrpLayerDesc_Cylinder;
 typedef OVRP_LAYER_DESC_TYPE ovrpLayerDesc_Cubemap;
+typedef OVRP_LAYER_DESC_TYPE ovrpLayerDesc_InsightPassthrough;
 
 typedef struct {
   OVRP_LAYER_DESC_TYPE;
@@ -1243,23 +1255,6 @@ typedef struct {
 
 typedef OVRP_LAYER_DESC_TYPE ovrpLayerDesc_OffcenterCubemap;
 typedef OVRP_LAYER_DESC_TYPE ovrpLayerDesc_Equirect;
-
-
-
-
-
-
-
-
-
-
-typedef struct {
-  OVRP_LAYER_DESC_TYPE;
-
-
-
-} ovrpLayerDesc_InsightPassthrough;
-
 typedef OVRP_LAYER_DESC_TYPE ovrpLayerDesc_Fisheye;
 
 typedef union {
@@ -2332,6 +2327,18 @@ typedef enum ovrpEventType_ {
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
 } ovrpEventType;
 
 // biggest event that OVRPlugin can use
@@ -2505,12 +2512,14 @@ typedef struct ovrpVirtualKeyboardCreateInfo_ {
 typedef struct ovrpVirtualKeyboardSpaceCreateInfo_ {
   ovrpVirtualKeyboardLocationType locationType;
   ovrpPosef pose;
+  ovrpTrackingOrigin trackingOrigin;
 } ovrpVirtualKeyboardSpaceCreateInfo;
 
 typedef struct ovrpVirtualKeyboardLocationInfo_ {
   ovrpVirtualKeyboardLocationType locationType;
   ovrpPosef pose;
   float scale;
+  ovrpTrackingOrigin trackingOrigin;
 } ovrpVirtualKeyboardLocationInfo;
 
 // When supplying input info, specifies which input device was used.
@@ -2534,6 +2543,7 @@ typedef struct ovrpVirtualKeyboardInputInfo_ {
   ovrpVirtualKeyboardInputSource inputSource;
   ovrpPosef inputPose;
   ovrpUInt64 inputState;
+  ovrpTrackingOrigin trackingOrigin;
 } ovrpVirtualKeyboardInputInfo;
 
 // Should remain synced with XR_MAX_VIRTUAL_KEYBOARD_COMMIT_TEXT_SIZE_META in meta_virtual_keyboard.h
@@ -2746,6 +2756,9 @@ typedef enum {
   ovrpSpaceComponentType_RoomLayout = 6,
   ovrpSpaceComponentType_SpaceContainer = 7,
   ovrpSpaceComponentType_TriangleMesh = 1000269000,
+
+
+
 
   ovrpSpatialEntityComponentType_Max = 0x7ffffff, // Deprecated
   ovrpSpaceComponentType_Max = 0x7ffffff,
@@ -3123,6 +3136,42 @@ typedef struct ovrpPassthroughPreferences_ {
   ovrpPassthroughPreferenceFields Fields;
   ovrpPassthroughPreferenceFlags Flags;
 } ovrpPassthroughPreferences;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

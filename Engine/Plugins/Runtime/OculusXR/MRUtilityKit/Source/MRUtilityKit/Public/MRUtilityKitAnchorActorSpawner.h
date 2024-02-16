@@ -51,6 +51,14 @@ public:
 	UMaterialInterface* ProceduralMaterial = nullptr;
 
 	/**
+	 * Whether or not the spawner should fallback to procedural meshes in case no actor
+	 * class has been defined for a label. This behaviour can be overwritten on the label
+	 * basis in SpawnGroups.
+	 */
+	UPROPERTY(EditAnywhere, Category = "MR Utility Kit")
+	bool ShouldFallbackToProcedural = true;
+
+	/**
 	 * A map of Actor classes to spawn for the given label.
 	 */
 	UPROPERTY(EditAnywhere, Category = "MR Utility Kit")

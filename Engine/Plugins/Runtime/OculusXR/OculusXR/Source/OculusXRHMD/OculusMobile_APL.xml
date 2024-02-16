@@ -60,6 +60,7 @@
 		<setBoolFromProperty result="bAnchorSharingEnabled" ini="Engine" section="/Script/OculusXRHMD.OculusXRHMDRuntimeSettings" property="bAnchorSharingEnabled" default="false"/>
 		<setBoolFromProperty result="bSceneSupportEnabled" ini="Engine" section="/Script/OculusXRHMD.OculusXRHMDRuntimeSettings" property="bSceneSupportEnabled" default="false"/>
 		
+		
 		<setBoolFromProperty result="bSupportEyeTrackedFoveatedRendering" ini="Engine" section="/Script/OculusXRHMD.OculusXRHMDRuntimeSettings" property="bSupportEyeTrackedFoveatedRendering" default="false"/>
 		<setStringFromProperty result="ProcessorFavor" ini="Engine" section="/Script/OculusXRHMD.OculusXRHMDRuntimeSettings" property="ProcessorFavor" default="FavorEqually"/>
 		<setBoolIsEqual result="bProcessorFavorEqually" arg1="$S(ProcessorFavor)" arg2="FavorEqually"/>
@@ -252,6 +253,7 @@
 						<addPermission android:name="com.oculus.permission.PLANE_TRACKING"/>
 					</true>
 				</if>
+				
 				
 			</true>
 		</if>

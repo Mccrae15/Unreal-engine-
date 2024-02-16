@@ -1,9 +1,4 @@
-/*
-Copyright (c) Meta Platforms, Inc. and affiliates.
-All rights reserved.
-This source code is licensed under the license found in the
-LICENSE file in the root directory of this source tree.
-*/
+// Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #pragma once
 
@@ -32,6 +27,7 @@ enum class EOculusXRRetargetingMode : uint8
 	Full UMETA(DisplayName = "Rotations and positions"),
 	Rotations UMETA(DisplayName = "Only rotations"),
 	RotationsPlusRoot UMETA(DisplayName = "Rotations and root position"),
+	RotationsPlusHips UMETA(DisplayName = "Rotations and hips position"),
 	None UMETA(DisplayName = "Disabled"),
 };
 

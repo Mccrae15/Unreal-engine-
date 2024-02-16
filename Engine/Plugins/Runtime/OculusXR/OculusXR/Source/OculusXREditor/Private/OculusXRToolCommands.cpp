@@ -1,13 +1,16 @@
+// @lint-ignore-every LICENSELINT
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "OculusXRToolCommands.h"
+
+#include "../../OculusXRProjectSetupTool/Private/OculusXRProjectSetupToolModule.h"
 #include "Framework/Docking/TabManager.h"
 
 #define LOCTEXT_NAMESPACE "FOculusXREditorModule"
 
 void FOculusToolCommands::RegisterCommands()
 {
-	UI_COMMAND(OpenPluginWindow, "Meta XR Peformance Window", "Show Meta XR Peformance Window", EUserInterfaceActionType::Button, FInputChord());
+	UI_COMMAND(OpenProjectSetupTool, "Meta XR Project Setup Tool", "Show Meta XR Project Setup Tool", EUserInterfaceActionType::Button, FInputChord());
 	UI_COMMAND(ToggleDeploySo, "Deploy compiled .so directly to device", "Faster deploy when we only have code changes by deploying compiled .so directly to device", EUserInterfaceActionType::ToggleButton, FInputChord());
 	UI_COMMAND(OpenPlatWindow, "Meta XR Platform Window", "Show Meta XR Platform Window", EUserInterfaceActionType::Button, FInputChord());
 
@@ -21,7 +24,7 @@ void FOculusToolCommands::RegisterCommands()
 
 void FOculusToolCommands::ShowOculusTool()
 {
-	FGlobalTabmanager::Get()->TryInvokeTab(FOculusXREditorModule::OculusPerfTabName);
+	IOculusXRProjectSetupToolModule::Get().ShowProjectSetupTool("Console");
 }
 
 #undef LOCTEXT_NAMESPACE

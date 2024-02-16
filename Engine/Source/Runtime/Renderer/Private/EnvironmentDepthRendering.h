@@ -15,6 +15,7 @@ EnvironmentDepthRendering.h: environment depth rendering declarations.
 class FShaderParameterMap;
 class FSceneView;
 struct FMobileBasePassTextures;
+struct FSceneTextures;
 
 BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FEnvironmentDepthUniformParameters, )
 	SHADER_PARAMETER_RDG_TEXTURE(Texture2DArray, EnvironmentDepthTexture)
@@ -25,3 +26,4 @@ BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FEnvironmentDepthUniformParameters, )
 END_GLOBAL_SHADER_PARAMETER_STRUCT()
 
 extern void SetupEnvironmentDepthUniformParameters(const class FSceneView& View, const FRDGSystemTextures& SystemTextures, const FMobileBasePassTextures& MobileBasePassTextures, FEnvironmentDepthUniformParameters& OutParameters);
+extern void SetupEnvironmentDepthUniformParameters(const class FSceneView& View, const FRDGSystemTextures& SystemTextures, const FSceneTextures* SceneTextures, FEnvironmentDepthUniformParameters& OutParameters);

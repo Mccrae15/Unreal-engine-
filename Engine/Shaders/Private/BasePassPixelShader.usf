@@ -74,6 +74,12 @@
 #include "DBufferDecalShared.ush"
 #include "ShadingModelsSampling.ush"
 
+// BEGIN META SECTION - XR Soft Occlusions
+#if ENABLE_SOFT_OCCLUSIONS
+	#include "EnvironmentDepthOcclusion.ush"
+#endif
+// END META SECTION - XR Soft Occlusions
+
 #include "SceneTexturesCommon.ush"
 #include "SceneTextureParameters.ush"
 #include "GBufferHelpers.ush"
@@ -2079,6 +2085,12 @@ void FPixelShaderInOut_MainPS(
 	}
 #endif // OIT_ENABLED
 
+// BEGIN META SECTION - XR Soft Occlusions
+#if ENABLE_SOFT_OCCLUSIONS
+	Out.MRT[0].rgba = EnvironmentDepthOcclusion(Out.MRT[0].rgba, float4(MaterialParameters.WorldPosition_CamRelative, 1.0f), View.StereoPassIndex);
+#endif
+// END META SECTION - XR Soft Occlusions
+	
 	// Sky dome, or any emissive, materials can result in high luminance values, e.g. the sun disk. 
 	// This Min here is to we make sure pre-exposed luminance remains within the boundaries of fp10 and not cause NaN on some platforms.
 	// We also half that range to also make sure we have room for other additive elements such as bloom, clouds or particle visual effects.

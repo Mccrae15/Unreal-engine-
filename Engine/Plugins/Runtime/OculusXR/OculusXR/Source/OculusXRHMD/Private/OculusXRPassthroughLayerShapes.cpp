@@ -1,3 +1,5 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+
 #include "OculusXRPassthroughLayerShapes.h"
 
 #include "OculusXRHMDPrivate.h"

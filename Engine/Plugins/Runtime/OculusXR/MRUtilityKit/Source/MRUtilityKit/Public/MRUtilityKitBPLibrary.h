@@ -45,15 +45,39 @@ class MRUTILITYKIT_API UMRUKBPLibrary : public UBlueprintFunctionLibrary
 	GENERATED_BODY()
 
 public:
+	/**
+	 * Load the global mesh from the device.
+	 * @param SpaceQuery        Space query of the room.
+	 * @param OutProceduralMesh Procedural mesh to load the triangle data in.
+	 * @param LoadCollision     Whether to generate collision or not.
+	 * @param WorldContext      Context of the world.
+	 * @return                  Whether the load was successful or not.
+	 */
 	UFUNCTION(BlueprintCallable, Category = "MR Utility Kit", meta = (WorldContext = "WorldContext"))
 	static bool LoadGlobalMeshFromDevice(FOculusXRSpaceQueryResult SpaceQuery, UProceduralMeshComponent* OutProceduralMesh, bool LoadCollision, const UObject* WorldContext);
 
+	/**
+	 * Load the global mesh from a JSON string.
+	 * @param JsonString        The string containing the JSON.
+	 * @param SpaceQuery        Space query of the room.
+	 * @param OutProceduralMesh Procedural mesh to load the triangle data in.
+	 * @param LoadCollision     Whether to generate collision or not
+	 * @return                  Whether the load was successful or not.
+	 */
 	UFUNCTION(BlueprintCallable, Category = "MR Utility Kit")
 	static bool LoadGlobalMeshFromJsonString(const FString& JsonString, FOculusXRSpaceQueryResult SpaceQuery, UProceduralMeshComponent* OutProceduralMesh, bool LoadCollision);
 
+	/**
+     * (Re)Calculate Normals and Tangents of the given procedural mesh.
+	 * @param Mesh The procedural mesh.
+	 */
 	UFUNCTION(BlueprintCallable, Category = "MR Utility Kit")
 	static void RecalculateProceduralMeshAndTangents(class UProceduralMeshComponent* Mesh);
 
+	/**
+     * Check if the current Unreal Engine is the fork of Meta.
+	 * @return Whether its the fork or not.
+	 */
 	UFUNCTION(BlueprintCallable, Category = "MR Utility Kit")
 	static bool IsUnrealEngineMetaFork();
 };

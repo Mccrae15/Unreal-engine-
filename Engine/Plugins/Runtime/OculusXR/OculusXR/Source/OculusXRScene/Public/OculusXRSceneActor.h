@@ -1,3 +1,4 @@
+// @lint-ignore-every LICENSELINT
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
@@ -6,6 +7,7 @@
 #include "OculusXRAnchorComponent.h"
 #include "OculusXRFunctionLibrary.h"
 #include "OculusXRSceneAnchorComponent.h"
+#include "OculusXRSceneTypes.h"
 #include "OculusXRSceneActor.generated.h"
 
 /** EOculusXRLaunchCaptureFlowWhenMissingScene
@@ -65,8 +67,8 @@ UCLASS(ClassGroup = OculusXRScene)
 class OCULUSXRSCENE_API AOculusXRSceneActor : public AActor
 {
 	GENERATED_BODY()
-
 public:
+
 	UFUNCTION(BlueprintCallable, Category = "OculusXR|Scene Actor")
 	void LaunchCaptureFlow();
 
@@ -91,6 +93,9 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "OculusXR|Scene Actor")
 	TArray<AActor*> GetActorsBySemanticLabel(const FString SemanticLabel);
 
+	UFUNCTION(BlueprintPure, BlueprintCallable, Category = "OculusXR|Scene Actor")
+	TArray<FOculusXRRoomLayout> GetRoomLayouts() const;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "OculusXR|Scene Actor")
 	TEnumAsByte<EOculusXRLaunchCaptureFlowWhenMissingScene> LauchCaptureFlowWhenMissingScene = EOculusXRLaunchCaptureFlowWhenMissingScene::ALWAYS;
 
@@ -110,6 +115,7 @@ public:
 
 	UPROPERTY(EditAnywhere, Category = "OculusXR|Scene Actor")
 	TMap<FString, FOculusXRSpawnedSceneAnchorProperties> SceneVolumeSpawnedSceneAnchorProperties;
+
 
 public:
 	AOculusXRSceneActor(const FObjectInitializer& ObjectInitializer);
@@ -151,6 +157,7 @@ private:
 
 	// Spawns a scene anchor
 	AActor* SpawnOrUpdateSceneAnchor(AActor* Anchor, const FOculusXRUInt64& Space, const FOculusXRUInt64& RoomSpaceID, const FVector& BoundedPos, const FVector& BoundedSize, const TArray<FString>& SemanticClassifications, const EOculusXRSpaceComponentType AnchorComponentType);
+
 
 	// Components for room layout and spatial anchors functionalities
 	UOculusXRRoomLayoutManagerComponent* RoomLayoutManagerComponent = nullptr;

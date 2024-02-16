@@ -1,3 +1,4 @@
+// @lint-ignore-every LICENSELINT
 // Copyright Epic Games, Inc. All Rights Reserved.
 // OculusEventComponent.h: Component to handle receiving events from Oculus HMDs
 

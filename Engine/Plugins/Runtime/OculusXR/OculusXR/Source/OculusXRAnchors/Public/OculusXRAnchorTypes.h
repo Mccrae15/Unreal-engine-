@@ -1,10 +1,4 @@
-/*
-Copyright (c) Meta Platforms, Inc. and affiliates.
-All rights reserved.
-
-This source code is licensed under the license found in the
-LICENSE file in the root directory of this source tree.
-*/
+// Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #pragma once
 #include <memory>
@@ -43,6 +37,7 @@ namespace EOculusXRAnchorResult
 		Failure_SpaceLocalizationFailed = -2002,
 		Failure_SpaceNetworkTimeout = -2003,
 		Failure_SpaceNetworkRequestFailed = -2004,
+
 
 
 	};
@@ -161,6 +156,7 @@ enum class EOculusXRSpaceComponentType : uint8
 	SpaceContainer = 7 UMETA(DisplayName = "SpaceContainer"),
 	Undefined = 8 UMETA(DisplayName = "Not defined"),
 	TriangleMesh = 9 UMETA(DisplayName = "TriangleMesh"),
+
 };
 
 USTRUCT(BlueprintType)
@@ -226,10 +222,24 @@ public:
 USTRUCT(BlueprintType)
 struct OCULUSXRANCHORS_API FOculusXRRoomLayout
 {
-	GENERATED_USTRUCT_BODY()
+	GENERATED_BODY()
+public:
+	UPROPERTY(BlueprintReadOnly, Category = "OculusXR|Anchors")
+	FOculusXRUInt64 RoomAnchorHandle;
 
+	UPROPERTY(BlueprintReadOnly, Category = "OculusXR|Anchors")
+	FOculusXRUUID RoomUuid;
+
+
+	UPROPERTY(BlueprintReadOnly, Category = "OculusXR|Anchors")
 	FOculusXRUUID FloorUuid;
+
+	UPROPERTY(BlueprintReadOnly, Category = "OculusXR|Anchors")
 	FOculusXRUUID CeilingUuid;
+
+	UPROPERTY(BlueprintReadOnly, Category = "OculusXR|Anchors")
 	TArray<FOculusXRUUID> WallsUuid;
+
+	UPROPERTY(BlueprintReadOnly, Category = "OculusXR|Anchors")
 	TArray<FOculusXRUUID> RoomObjectUUIDs;
 };

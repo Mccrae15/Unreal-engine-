@@ -1,10 +1,5 @@
-/*
-Copyright (c) Meta Platforms, Inc. and affiliates.
-All rights reserved.
+// Copyright (c) Meta Platforms, Inc. and affiliates.
 
-This source code is licensed under the license found in the
-LICENSE file in the root directory of this source tree.
-*/
 #pragma once
 
 #include "CoreMinimal.h"
@@ -54,6 +49,7 @@ namespace OculusXRAnchors
 		static bool GetSpaceSceneVolume(uint64 Space, FVector& OutPos, FVector& OutSize, EOculusXRAnchorResult::Type& OutResult);
 		static bool GetSpaceSemanticClassification(uint64 Space, TArray<FString>& OutSemanticClassifications, EOculusXRAnchorResult::Type& OutResult);
 		static bool GetSpaceBoundary2D(uint64 Space, TArray<FVector2f>& OutVertices, EOculusXRAnchorResult::Type& OutResult);
+
 
 
 	private:

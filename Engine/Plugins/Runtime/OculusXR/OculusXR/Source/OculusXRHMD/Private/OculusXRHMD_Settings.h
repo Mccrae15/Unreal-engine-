@@ -1,3 +1,4 @@
+// @lint-ignore-every LICENSELINT
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
@@ -79,6 +80,7 @@ namespace OculusXRHMD
 
 				/** Whether Scene can be used with the app */
 				uint64 bSceneSupportEnabled : 1;
+
 
 
 				/** Whether body tracking functionality can be used with the app */

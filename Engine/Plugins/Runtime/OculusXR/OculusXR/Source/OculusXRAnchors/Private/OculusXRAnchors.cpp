@@ -1,10 +1,4 @@
-/*
-Copyright (c) Meta Platforms, Inc. and affiliates.
-All rights reserved.
-
-This source code is licensed under the license found in the
-LICENSE file in the root directory of this source tree.
-*/
+// Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include "OculusXRAnchors.h"
 #include "CoreMinimal.h"
@@ -498,6 +492,7 @@ namespace OculusXRAnchors
 		OutResult = FOculusXRAnchorManager::GetSpaceBoundary2D(Space, OutVertices);
 		return UOculusXRAnchorBPFunctionLibrary::IsAnchorResultSuccess(OutResult);
 	}
+
 
 	void FOculusXRAnchors::HandleSpatialAnchorCreateComplete(FOculusXRUInt64 RequestId, int Result, FOculusXRUInt64 Space, FOculusXRUUID UUID)
 	{

@@ -1,10 +1,5 @@
-/*
-Copyright (c) Meta Platforms, Inc. and affiliates.
-All rights reserved.
+// Copyright (c) Meta Platforms, Inc. and affiliates.
 
-This source code is licensed under the license found in the
-LICENSE file in the root directory of this source tree.
-*/
 #include "OculusXRRoomLayoutManager.h"
 #include "OculusXRHMD.h"
 #include "OculusXRAnchorDelegates.h"
@@ -72,20 +67,31 @@ namespace OculusXRAnchors
 	 * @param OutCeilingUuid The ceiling entity's uuid
 	 * @param OutFloorUuid The floor entity's uuid
 	 * @param OutWallsUuid Array of uuids belonging to the walls in the room layout
-	 * @return returns true if sucessfull
+	 * @return returns true if successful
 	 */
 	bool FOculusXRRoomLayoutManager::GetSpaceRoomLayout(const uint64 Space, const uint32 MaxWallsCapacity,
 		FOculusXRUUID& OutCeilingUuid, FOculusXRUUID& OutFloorUuid, TArray<FOculusXRUUID>& OutWallsUuid)
 	{
-		TArray<ovrpUuid> uuids;
-		uuids.InsertZeroed(0, MaxWallsCapacity);
-
 		ovrpRoomLayout roomLayout;
-		roomLayout.wallUuidCapacityInput = MaxWallsCapacity;
+		roomLayout.wallUuidCapacityInput = 0;
+		roomLayout.wallUuidCountOutput = 0;
+
+		// First call to get output size
+		const ovrpResult firstCallResult = FOculusXRHMDModule::GetPluginWrapper().GetSpaceRoomLayout(&Space, &roomLayout);
+		if (OVRP_FAILURE(firstCallResult))
+		{
+			return false;
+		}
+
+		// Set the input size and pointer to the uuid array
+		TArray<ovrpUuid> uuids;
+		uuids.InsertZeroed(0, roomLayout.wallUuidCountOutput);
+
+		roomLayout.wallUuidCapacityInput = roomLayout.wallUuidCountOutput;
 		roomLayout.wallUuids = uuids.GetData();
 
-		const ovrpResult Result = FOculusXRHMDModule::GetPluginWrapper().GetSpaceRoomLayout(&Space, &roomLayout);
-		if (OVRP_FAILURE(Result))
+		const ovrpResult secondCallResult = FOculusXRHMDModule::GetPluginWrapper().GetSpaceRoomLayout(&Space, &roomLayout);
+		if (OVRP_FAILURE(secondCallResult))
 		{
 			return false;
 		}
@@ -94,9 +100,9 @@ namespace OculusXRAnchors
 		OutFloorUuid = FOculusXRUUID(roomLayout.floorUuid.data);
 
 		OutWallsUuid.Empty();
-		OutWallsUuid.InsertZeroed(0, roomLayout.wallUuidCountOutput);
+		OutWallsUuid.InsertZeroed(0, uuids.Num());
 
-		for (int32 i = 0; i < roomLayout.wallUuidCountOutput; ++i)
+		for (int32 i = 0; i < uuids.Num(); ++i)
 		{
 			OutWallsUuid[i] = FOculusXRUUID(roomLayout.wallUuids[i].data);
 		}

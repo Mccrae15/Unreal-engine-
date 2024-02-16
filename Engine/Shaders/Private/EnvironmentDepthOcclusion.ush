@@ -1,6 +1,15 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#define EnvironmentDepthParameters		MobileBasePass.EnvironmentDepthParameters
+#if SHADING_PATH_DEFERRED
+#if MATERIALBLENDING_ANY_TRANSLUCENT
+	#define EnvironmentDepthParameters		TranslucentBasePass.Shared.EnvironmentDepthParameters
+#else
+	#define EnvironmentDepthParameters		OpaqueBasePass.Shared.EnvironmentDepthParameters
+#endif
+#elif SHADING_PATH_MOBILE
+	#define EnvironmentDepthParameters		MobileBasePass.EnvironmentDepthParameters
+#endif
+
 #define EnvironmentDepthTexture			EnvironmentDepthParameters.EnvironmentDepthTexture
 #define EnvironmentDepthSampler			EnvironmentDepthParameters.EnvironmentDepthSampler
 #define DepthViewProjMatrices			EnvironmentDepthParameters.DepthViewProjMatrices
@@ -83,7 +92,15 @@ float4 EnvironmentDepthOcclusion(float4 InputColor, float4 WorldPosition_CamRela
 	float2 Normalized = (DepthClipSpace.xy / DepthClipSpace.w + 1.0f) * 0.5f;
 	float3 TexCoord = float3(Normalized, ViewId);
 	
-	float ScreenDepth = -DepthClipSpace.z / DepthClipSpace.w;
+	// ScreenDepth = 0 when the depth coincides with the near Z plane.
+	// ScreenDepth = 1 when the depth coincides with the far Z plane.
+	float ScreenDepth = DepthClipSpace.z / DepthClipSpace.w;
+	
+	// Adjust for depth bias. The bias is specified in terms of linear depth:
+	// Biased Linear Screen Depth = Linear Screen Depth * (1 - bias)
+	// Screen Depth = 1 - NearZ / Linear Screen Depth (assuming infinite far plane)
+	// Solving the equations above yields the following:
+	ScreenDepth = 1.0f - (1.0f - ScreenDepth) / (1.0f - GetMaterialXRSoftOcclusionsDepthBias());
 
 	float PassthroughFraction = SampleDepthPoissonBlur(TexCoord, ScreenDepth);
 

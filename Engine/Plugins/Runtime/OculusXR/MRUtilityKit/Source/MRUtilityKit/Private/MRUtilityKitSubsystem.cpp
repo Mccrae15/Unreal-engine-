@@ -313,12 +313,12 @@ AMRUKAnchor* UMRUKSubsystem::IsPositionInSceneVolume(const FVector& WorldPositio
 	return nullptr;
 }
 
-TArray<AActor*> UMRUKSubsystem::SpawnInterior(const TMap<FString, FMRUKSpawnGroup>& SpawnGroups, UMaterialInterface* ProceduralMaterial)
+TArray<AActor*> UMRUKSubsystem::SpawnInterior(const TMap<FString, FMRUKSpawnGroup>& SpawnGroups, UMaterialInterface* ProceduralMaterial, bool ShouldFallbackToProcedural)
 {
-	return SpawnInteriorFromStream(SpawnGroups, FRandomStream(NAME_None), ProceduralMaterial);
+	return SpawnInteriorFromStream(SpawnGroups, FRandomStream(NAME_None), ProceduralMaterial, ShouldFallbackToProcedural);
 }
 
-TArray<AActor*> UMRUKSubsystem::SpawnInteriorFromStream(const TMap<FString, FMRUKSpawnGroup>& SpawnGroups, const FRandomStream& RandomStream, UMaterialInterface* ProceduralMaterial)
+TArray<AActor*> UMRUKSubsystem::SpawnInteriorFromStream(const TMap<FString, FMRUKSpawnGroup>& SpawnGroups, const FRandomStream& RandomStream, UMaterialInterface* ProceduralMaterial, bool ShouldFallbackToProcedural)
 {
 	TArray<AActor*> AllInteriorActors;
 
@@ -328,7 +328,7 @@ TArray<AActor*> UMRUKSubsystem::SpawnInteriorFromStream(const TMap<FString, FMRU
 		{
 			continue;
 		}
-		auto InteriorActors = Room->SpawnInteriorFromStream(SpawnGroups, RandomStream, ProceduralMaterial);
+		auto InteriorActors = Room->SpawnInteriorFromStream(SpawnGroups, RandomStream, ProceduralMaterial, ShouldFallbackToProcedural);
 		AllInteriorActors.Append(InteriorActors);
 	}
 
