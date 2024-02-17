@@ -180,12 +180,6 @@ class OCULUSXRHMD_API UOculusXRFunctionLibrary : public UBlueprintFunctionLibrar
 	static float GetGPUFrameTime();
 
 	/**
-	* Returns the performance metrics
-	*/
-	UFUNCTION(BlueprintPure, Category = "OculusLibrary")
-	static void GetPerformanceMetrics(FOculusXRPerformanceMetrics& PerformanceMetrics);
-
-	/**
 	* Returns the foveated rendering method currently being used
 	*/
 	UFUNCTION(BlueprintCallable, Category = "OculusLibrary")
