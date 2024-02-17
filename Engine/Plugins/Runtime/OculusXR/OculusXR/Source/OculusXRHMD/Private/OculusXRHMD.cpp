@@ -672,11 +672,16 @@ namespace OculusXRHMD
 	DEFINE_STAT(STAT_OculusSystem_CpuCore6Util);
 	DEFINE_STAT(STAT_OculusSystem_CpuCore7Util);
 
-	void UpdateOculusSystemMetricsStats()
+	void UpdateOculusSystemMetricsStats(FOculusXRPerformanceMetrics& PerformanceMetrics)
 	{
 		if (FOculusXRHMDModule::GetPluginWrapper().GetInitialized() == ovrpBool_False)
 		{
 			return;
+		}
+
+		if (PerformanceMetrics.CpuCoreUtil.Num() == 0)
+		{
+			PerformanceMetrics.CpuCoreUtil.Init(0, 8);
 		}
 
 		ovrpBool bIsSupported;
@@ -686,149 +691,175 @@ namespace OculusXRHMD
 		{
 			if (OVRP_SUCCESS(FOculusXRHMDModule::GetPluginWrapper().GetPerfMetricsFloat(ovrpPerfMetrics_App_CpuTime_Float, &valueFloat)))
 			{
-				SET_FLOAT_STAT(STAT_OculusSystem_AppCpuTime, valueFloat * 1000);
+				PerformanceMetrics.AppCpuTime = valueFloat * 1000;
+				SET_FLOAT_STAT(STAT_OculusSystem_AppCpuTime, PerformanceMetrics.AppCpuTime);
 			}
 		}
 		if (OVRP_SUCCESS(FOculusXRHMDModule::GetPluginWrapper().IsPerfMetricsSupported(ovrpPerfMetrics_App_GpuTime_Float, &bIsSupported)) && bIsSupported == ovrpBool_True)
 		{
 			if (OVRP_SUCCESS(FOculusXRHMDModule::GetPluginWrapper().GetPerfMetricsFloat(ovrpPerfMetrics_App_GpuTime_Float, &valueFloat)))
 			{
-				SET_FLOAT_STAT(STAT_OculusSystem_AppGpuTime, valueFloat * 1000);
+				PerformanceMetrics.AppGpuTime = valueFloat * 1000;
+				SET_FLOAT_STAT(STAT_OculusSystem_AppGpuTime, PerformanceMetrics.AppGpuTime);
 			}
 		}
 		if (OVRP_SUCCESS(FOculusXRHMDModule::GetPluginWrapper().IsPerfMetricsSupported(ovrpPerfMetrics_Compositor_CpuTime_Float, &bIsSupported)) && bIsSupported == ovrpBool_True)
 		{
 			if (OVRP_SUCCESS(FOculusXRHMDModule::GetPluginWrapper().GetPerfMetricsFloat(ovrpPerfMetrics_Compositor_CpuTime_Float, &valueFloat)))
 			{
-				SET_FLOAT_STAT(STAT_OculusSystem_ComCpuTime, valueFloat * 1000);
+				PerformanceMetrics.ComCpuTime = valueFloat * 1000;
+				SET_FLOAT_STAT(STAT_OculusSystem_ComCpuTime, PerformanceMetrics.ComCpuTime);
 			}
 		}
 		if (OVRP_SUCCESS(FOculusXRHMDModule::GetPluginWrapper().IsPerfMetricsSupported(ovrpPerfMetrics_Compositor_GpuTime_Float, &bIsSupported)) && bIsSupported == ovrpBool_True)
 		{
 			if (OVRP_SUCCESS(FOculusXRHMDModule::GetPluginWrapper().GetPerfMetricsFloat(ovrpPerfMetrics_Compositor_GpuTime_Float, &valueFloat)))
 			{
-				SET_FLOAT_STAT(STAT_OculusSystem_ComGpuTime, valueFloat * 1000);
+				PerformanceMetrics.ComGpuTime = valueFloat * 1000;
+				SET_FLOAT_STAT(STAT_OculusSystem_ComGpuTime, PerformanceMetrics.ComGpuTime);
 			}
 		}
 		if (OVRP_SUCCESS(FOculusXRHMDModule::GetPluginWrapper().IsPerfMetricsSupported(ovrpPerfMetrics_Compositor_DroppedFrameCount_Int, &bIsSupported)) && bIsSupported == ovrpBool_True)
 		{
 			if (OVRP_SUCCESS(FOculusXRHMDModule::GetPluginWrapper().GetPerfMetricsInt(ovrpPerfMetrics_Compositor_DroppedFrameCount_Int, &valueInt)))
 			{
-				SET_DWORD_STAT(STAT_OculusSystem_DroppedFrames, valueInt);
+				PerformanceMetrics.DroppedFrames = valueInt;
+				SET_DWORD_STAT(STAT_OculusSystem_DroppedFrames, PerformanceMetrics.DroppedFrames);
 			}
 		}
 		if (OVRP_SUCCESS(FOculusXRHMDModule::GetPluginWrapper().IsPerfMetricsSupported(ovrpPerfMetrics_System_GpuUtilPercentage_Float, &bIsSupported)) && bIsSupported == ovrpBool_True)
 		{
 			if (OVRP_SUCCESS(FOculusXRHMDModule::GetPluginWrapper().GetPerfMetricsFloat(ovrpPerfMetrics_System_GpuUtilPercentage_Float, &valueFloat)))
 			{
-				SET_FLOAT_STAT(STAT_OculusSystem_GpuUtil, valueFloat * 100);
+				PerformanceMetrics.GpuUtil = valueFloat * 100;
+				SET_FLOAT_STAT(STAT_OculusSystem_GpuUtil, PerformanceMetrics.GpuUtil);
 			}
 		}
 		if (OVRP_SUCCESS(FOculusXRHMDModule::GetPluginWrapper().IsPerfMetricsSupported(ovrpPerfMetrics_System_CpuUtilAveragePercentage_Float, &bIsSupported)) && bIsSupported == ovrpBool_True)
 		{
 			if (OVRP_SUCCESS(FOculusXRHMDModule::GetPluginWrapper().GetPerfMetricsFloat(ovrpPerfMetrics_System_CpuUtilAveragePercentage_Float, &valueFloat)))
 			{
-				SET_FLOAT_STAT(STAT_OculusSystem_CpuUtilAvg, valueFloat * 100);
+				PerformanceMetrics.CpuUtilAvg = valueFloat * 100;
+				SET_FLOAT_STAT(STAT_OculusSystem_CpuUtilAvg, PerformanceMetrics.CpuUtilAvg);
 			}
 		}
 		if (OVRP_SUCCESS(FOculusXRHMDModule::GetPluginWrapper().IsPerfMetricsSupported(ovrpPerfMetrics_System_CpuUtilWorstPercentage_Float, &bIsSupported)) && bIsSupported == ovrpBool_True)
 		{
 			if (OVRP_SUCCESS(FOculusXRHMDModule::GetPluginWrapper().GetPerfMetricsFloat(ovrpPerfMetrics_System_CpuUtilWorstPercentage_Float, &valueFloat)))
 			{
-				SET_FLOAT_STAT(STAT_OculusSystem_CpuUtilWorst, valueFloat * 100);
+				PerformanceMetrics.CpuUtilWorst = valueFloat * 100;
+				SET_FLOAT_STAT(STAT_OculusSystem_CpuUtilWorst, PerformanceMetrics.CpuUtilWorst);
 			}
 		}
 		if (OVRP_SUCCESS(FOculusXRHMDModule::GetPluginWrapper().IsPerfMetricsSupported(ovrpPerfMetrics_Device_CpuClockFrequencyInMHz_Float, &bIsSupported)) && bIsSupported == ovrpBool_True)
 		{
 			if (OVRP_SUCCESS(FOculusXRHMDModule::GetPluginWrapper().GetPerfMetricsFloat(ovrpPerfMetrics_Device_CpuClockFrequencyInMHz_Float, &valueFloat)))
 			{
-				SET_FLOAT_STAT(STAT_OculusSystem_CpuFreq, valueFloat);
+				PerformanceMetrics.CpuFreq = valueFloat;
+				SET_FLOAT_STAT(STAT_OculusSystem_CpuFreq, PerformanceMetrics.CpuFreq);
 			}
 		}
 		if (OVRP_SUCCESS(FOculusXRHMDModule::GetPluginWrapper().IsPerfMetricsSupported(ovrpPerfMetrics_Device_GpuClockFrequencyInMHz_Float, &bIsSupported)) && bIsSupported == ovrpBool_True)
 		{
 			if (OVRP_SUCCESS(FOculusXRHMDModule::GetPluginWrapper().GetPerfMetricsFloat(ovrpPerfMetrics_Device_GpuClockFrequencyInMHz_Float, &valueFloat)))
 			{
-				SET_FLOAT_STAT(STAT_OculusSystem_GpuFreq, valueFloat);
+				PerformanceMetrics.GpuFreq = valueFloat;
+				SET_FLOAT_STAT(STAT_OculusSystem_GpuFreq, PerformanceMetrics.GpuFreq);
 			}
 		}
 		if (OVRP_SUCCESS(FOculusXRHMDModule::GetPluginWrapper().IsPerfMetricsSupported(ovrpPerfMetrics_Device_CpuClockLevel_Int, &bIsSupported)) && bIsSupported == ovrpBool_True)
 		{
 			if (OVRP_SUCCESS(FOculusXRHMDModule::GetPluginWrapper().GetPerfMetricsInt(ovrpPerfMetrics_Device_CpuClockLevel_Int, &valueInt)))
 			{
-				SET_DWORD_STAT(STAT_OculusSystem_CpuClockLvl, valueInt);
+				PerformanceMetrics.CpuClockLvl = valueInt;
+				SET_DWORD_STAT(STAT_OculusSystem_CpuClockLvl, PerformanceMetrics.CpuClockLvl);
 			}
 		}
 		if (OVRP_SUCCESS(FOculusXRHMDModule::GetPluginWrapper().IsPerfMetricsSupported(ovrpPerfMetrics_Device_GpuClockLevel_Int, &bIsSupported)) && bIsSupported == ovrpBool_True)
 		{
 			if (OVRP_SUCCESS(FOculusXRHMDModule::GetPluginWrapper().GetPerfMetricsInt(ovrpPerfMetrics_Device_GpuClockLevel_Int, &valueInt)))
 			{
-				SET_DWORD_STAT(STAT_OculusSystem_GpuClockLvl, valueInt);
+				PerformanceMetrics.GpuClockLvl = valueInt;
+				SET_DWORD_STAT(STAT_OculusSystem_GpuClockLvl, PerformanceMetrics.GpuClockLvl);
 			}
 		}
 		if (OVRP_SUCCESS(FOculusXRHMDModule::GetPluginWrapper().IsPerfMetricsSupported(ovrpPerfMetrics_Compositor_SpaceWarp_Mode_Int, &bIsSupported)) && bIsSupported == ovrpBool_True)
 		{
 			if (OVRP_SUCCESS(FOculusXRHMDModule::GetPluginWrapper().GetPerfMetricsInt(ovrpPerfMetrics_Compositor_SpaceWarp_Mode_Int, &valueInt)))
 			{
-				SET_DWORD_STAT(STAT_OculusSystem_ComSpaceWarpMode, valueInt);
+				PerformanceMetrics.ComSpaceWarpMode = valueInt;
+				SET_DWORD_STAT(STAT_OculusSystem_ComSpaceWarpMode, PerformanceMetrics.ComSpaceWarpMode);
 			}
 		}
 		if (OVRP_SUCCESS(FOculusXRHMDModule::GetPluginWrapper().IsPerfMetricsSupported(ovrpPerfMetrics_Device_CpuCore0UtilPercentage_Float, &bIsSupported)) && bIsSupported == ovrpBool_True)
 		{
 			if (OVRP_SUCCESS(FOculusXRHMDModule::GetPluginWrapper().GetPerfMetricsFloat(ovrpPerfMetrics_Device_CpuCore0UtilPercentage_Float, &valueFloat)))
 			{
-				SET_FLOAT_STAT(STAT_OculusSystem_CpuCore0Util, valueFloat);
+				PerformanceMetrics.CpuCoreUtil[0] = valueFloat;
+				SET_FLOAT_STAT(STAT_OculusSystem_CpuCore0Util, PerformanceMetrics.CpuCoreUtil[0]);
 			}
 		}
 		if (OVRP_SUCCESS(FOculusXRHMDModule::GetPluginWrapper().IsPerfMetricsSupported(ovrpPerfMetrics_Device_CpuCore1UtilPercentage_Float, &bIsSupported)) && bIsSupported == ovrpBool_True)
 		{
 			if (OVRP_SUCCESS(FOculusXRHMDModule::GetPluginWrapper().GetPerfMetricsFloat(ovrpPerfMetrics_Device_CpuCore1UtilPercentage_Float, &valueFloat)))
 			{
-				SET_FLOAT_STAT(STAT_OculusSystem_CpuCore1Util, valueFloat);
+				PerformanceMetrics.CpuCoreUtil[1] = valueFloat;
+				SET_FLOAT_STAT(STAT_OculusSystem_CpuCore1Util, PerformanceMetrics.CpuCoreUtil[1]);
 			}
 		}
 		if (OVRP_SUCCESS(FOculusXRHMDModule::GetPluginWrapper().IsPerfMetricsSupported(ovrpPerfMetrics_Device_CpuCore2UtilPercentage_Float, &bIsSupported)) && bIsSupported == ovrpBool_True)
 		{
 			if (OVRP_SUCCESS(FOculusXRHMDModule::GetPluginWrapper().GetPerfMetricsFloat(ovrpPerfMetrics_Device_CpuCore2UtilPercentage_Float, &valueFloat)))
 			{
-				SET_FLOAT_STAT(STAT_OculusSystem_CpuCore2Util, valueFloat);
+				PerformanceMetrics.CpuCoreUtil[2] = valueFloat;
+				SET_FLOAT_STAT(STAT_OculusSystem_CpuCore2Util, PerformanceMetrics.CpuCoreUtil[2]);
 			}
 		}
 		if (OVRP_SUCCESS(FOculusXRHMDModule::GetPluginWrapper().IsPerfMetricsSupported(ovrpPerfMetrics_Device_CpuCore3UtilPercentage_Float, &bIsSupported)) && bIsSupported == ovrpBool_True)
 		{
 			if (OVRP_SUCCESS(FOculusXRHMDModule::GetPluginWrapper().GetPerfMetricsFloat(ovrpPerfMetrics_Device_CpuCore3UtilPercentage_Float, &valueFloat)))
 			{
-				SET_FLOAT_STAT(STAT_OculusSystem_CpuCore3Util, valueFloat);
+				PerformanceMetrics.CpuCoreUtil[3] = valueFloat;
+				SET_FLOAT_STAT(STAT_OculusSystem_CpuCore3Util, PerformanceMetrics.CpuCoreUtil[3]);
 			}
 		}
 		if (OVRP_SUCCESS(FOculusXRHMDModule::GetPluginWrapper().IsPerfMetricsSupported(ovrpPerfMetrics_Device_CpuCore4UtilPercentage_Float, &bIsSupported)) && bIsSupported == ovrpBool_True)
 		{
 			if (OVRP_SUCCESS(FOculusXRHMDModule::GetPluginWrapper().GetPerfMetricsFloat(ovrpPerfMetrics_Device_CpuCore4UtilPercentage_Float, &valueFloat)))
 			{
-				SET_FLOAT_STAT(STAT_OculusSystem_CpuCore4Util, valueFloat);
+				PerformanceMetrics.CpuCoreUtil[4] = valueFloat;
+				SET_FLOAT_STAT(STAT_OculusSystem_CpuCore4Util, PerformanceMetrics.CpuCoreUtil[4]);
 			}
 		}
 		if (OVRP_SUCCESS(FOculusXRHMDModule::GetPluginWrapper().IsPerfMetricsSupported(ovrpPerfMetrics_Device_CpuCore5UtilPercentage_Float, &bIsSupported)) && bIsSupported == ovrpBool_True)
 		{
 			if (OVRP_SUCCESS(FOculusXRHMDModule::GetPluginWrapper().GetPerfMetricsFloat(ovrpPerfMetrics_Device_CpuCore5UtilPercentage_Float, &valueFloat)))
 			{
-				SET_FLOAT_STAT(STAT_OculusSystem_CpuCore5Util, valueFloat);
+				PerformanceMetrics.CpuCoreUtil[5] = valueFloat;
+				SET_FLOAT_STAT(STAT_OculusSystem_CpuCore5Util, PerformanceMetrics.CpuCoreUtil[5]);
 			}
 		}
 		if (OVRP_SUCCESS(FOculusXRHMDModule::GetPluginWrapper().IsPerfMetricsSupported(ovrpPerfMetrics_Device_CpuCore6UtilPercentage_Float, &bIsSupported)) && bIsSupported == ovrpBool_True)
 		{
 			if (OVRP_SUCCESS(FOculusXRHMDModule::GetPluginWrapper().GetPerfMetricsFloat(ovrpPerfMetrics_Device_CpuCore6UtilPercentage_Float, &valueFloat)))
 			{
-				SET_FLOAT_STAT(STAT_OculusSystem_CpuCore6Util, valueFloat);
+				PerformanceMetrics.CpuCoreUtil[6] = valueFloat;
+				SET_FLOAT_STAT(STAT_OculusSystem_CpuCore6Util, PerformanceMetrics.CpuCoreUtil[6]);
 			}
 		}
 		if (OVRP_SUCCESS(FOculusXRHMDModule::GetPluginWrapper().IsPerfMetricsSupported(ovrpPerfMetrics_Device_CpuCore7UtilPercentage_Float, &bIsSupported)) && bIsSupported == ovrpBool_True)
 		{
 			if (OVRP_SUCCESS(FOculusXRHMDModule::GetPluginWrapper().GetPerfMetricsFloat(ovrpPerfMetrics_Device_CpuCore7UtilPercentage_Float, &valueFloat)))
 			{
-				SET_FLOAT_STAT(STAT_OculusSystem_CpuCore7Util, valueFloat);
+				PerformanceMetrics.CpuCoreUtil[7] = valueFloat;
+				SET_FLOAT_STAT(STAT_OculusSystem_CpuCore7Util, PerformanceMetrics.CpuCoreUtil[7]);
 			}
 		}
+	}
+
+	const FOculusXRPerformanceMetrics FOculusXRHMD::GetPerformanceMetrics() const
+	{
+		return PerformanceMetrics;
 	}
 
 	bool FOculusXRHMD::OnStartGameFrame(FWorldContext& InWorldContext)
@@ -840,7 +871,7 @@ namespace OculusXRHMD
 			return false;
 		}
 
-		UpdateOculusSystemMetricsStats();
+		UpdateOculusSystemMetricsStats(PerformanceMetrics);
 
 		RefreshTrackingToWorldTransform(InWorldContext);
 

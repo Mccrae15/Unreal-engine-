@@ -259,6 +259,7 @@ namespace OculusXRHMD
 		virtual bool LateLatchingEnabled() const override;
 		virtual void PreLateLatchingViewFamily_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneViewFamily& InViewFamily) override;
 #endif
+		const FOculusXRPerformanceMetrics GetPerformanceMetrics() const;
 
 	public:
 		FOculusXRHMD(const FAutoRegister&);
@@ -619,6 +620,8 @@ namespace OculusXRHMD
 
 		bool bShutdownRequestQueued;
 		bool bEyeTrackedFoveatedRenderingSupported;
+
+		FOculusXRPerformanceMetrics PerformanceMetrics;
 
 		TArray<FOculusXRHMDEventPollingDelegate> EventPollingDelegates;
 	};
